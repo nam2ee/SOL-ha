@@ -19,16 +19,17 @@ type State struct {
 	// PeerStatesRefreshedAt is the last time the peer states were refreshed
 	PeerStatesRefreshedAt time.Time
 	// peerStatesByName are the peers that are currently in the solana network, keyed by their name
-	peerStatesByName       map[string]PeerState // these are the peers that are currently in the solana network, keyed by their name
-	configPeers            config.Peers
-	activePubkey           string
-	selfIP                 string
-	clusterRPC             *rpc.Client
-	logger                 *log.Logger
-	missingGossipIPs       []string
-	lastActivePeer         PeerState
-	activePeerLastSeenAt   time.Time
-	LeaderlessSamplesCount int
+	peerStatesByName               map[string]PeerState // these are the peers that are currently in the solana network, keyed by their name
+	configPeers                    config.Peers
+	activePubkey                   string
+	selfIP                         string
+	clusterRPC                     *rpc.Client
+	logger                         *log.Logger
+	missingGossipIPs               []string
+	lastActivePeer                 PeerState
+	activePeerLastSeenAt           time.Time
+	LeaderlessSamplesCount         int
+	delinquentSlotDistanceOverride config.DelinquentSlotDistanceOverride
 }
 
 // PeerState represents the state of a peer as seen by the solana network
@@ -49,22 +50,24 @@ type PeerState struct {
 
 // Options are the options for peers state
 type Options struct {
-	ClusterRPC   *rpc.Client
-	ActivePubkey string
-	SelfIP       string
-	ConfigPeers  config.Peers
-	LogPrefix    string
+	ClusterRPC                     *rpc.Client
+	DelinquentSlotDistanceOverride config.DelinquentSlotDistanceOverride
+	ActivePubkey                   string
+	SelfIP                         string
+	ConfigPeers                    config.Peers
+	LogPrefix                      string
 }
 
 // NewState creates a new gossip state
 func NewState(opts Options) *State {
 	return &State{
-		logger:           log.WithPrefix(fmt.Sprintf("[%s gossip_state]", opts.LogPrefix)),
-		clusterRPC:       opts.ClusterRPC,
-		activePubkey:     opts.ActivePubkey,
-		selfIP:           opts.SelfIP,
-		configPeers:      opts.ConfigPeers,
-		peerStatesByName: make(map[string]PeerState),
+		logger:                         log.WithPrefix(fmt.Sprintf("[%s gossip_state]", opts.LogPrefix)),
+		clusterRPC:                     opts.ClusterRPC,
+		activePubkey:                   opts.ActivePubkey,
+		selfIP:                         opts.SelfIP,
+		configPeers:                    opts.ConfigPeers,
+		peerStatesByName:               make(map[string]PeerState),
+		delinquentSlotDistanceOverride: opts.DelinquentSlotDistanceOverride,
 	}
 }
 
@@ -243,8 +246,19 @@ func (p *State) isNodeActiveAndVoting(node solanagorpc.GetClusterNodesResult) bo
 		return true // forgive rpc error and assume innocence lest we trigger a false-positive failover
 	}
 
+	// configure get vote accounts options
+	getVoteAccountsOpts := solanagorpc.GetVoteAccountsOpts{
+		Commitment: solanagorpc.CommitmentProcessed,
+	}
+
+	// if configured, override the sdk delinquent slot distance value with a config-supplied value
+	if p.delinquentSlotDistanceOverride.Enabled {
+		delinquentSlotDistance := uint64(p.delinquentSlotDistanceOverride.Value)
+		getVoteAccountsOpts.DelinquentSlotDistance = &delinquentSlotDistance
+	}
+
 	// get vote accounts to look for our node within
-	voteAccounts, err := p.clusterRPC.GetVoteAccounts(context.Background())
+	voteAccounts, err := p.clusterRPC.GetVoteAccounts(context.Background(), &getVoteAccountsOpts)
 	if err != nil {
 		p.logger.Error("failed to get vote accounts", "error", err)
 		return true // forgive rpc error and assume innocence lest we trigger a false-positive failover
@@ -280,6 +294,7 @@ func (p *State) isNodeActiveAndVoting(node solanagorpc.GetClusterNodesResult) bo
 			"gossip_address", *node.Gossip,
 			"pubkey", node.Pubkey.String(),
 			"current_slot", currentSlot,
+			"last_voted_at_slot", delinquentVoteAccount.LastVote,
 		)
 		return false
 	}
