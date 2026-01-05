@@ -123,13 +123,11 @@ func (c *Client) GetSlot(ctx context.Context) (uint64, error) {
 
 // GetVoteAccounts gets the vote accounts from the first working RPC client
 
-func (c *Client) GetVoteAccounts(ctx context.Context) (*rpc.GetVoteAccountsResult, error) {
+func (c *Client) GetVoteAccounts(ctx context.Context, opts *rpc.GetVoteAccountsOpts) (*rpc.GetVoteAccountsResult, error) {
 	return executeWithRetry(c, ctx, rpcOperation[*rpc.GetVoteAccountsResult]{
 		name: "GetVoteAccounts",
 		execute: func(client *rpc.Client, ctx context.Context) (*rpc.GetVoteAccountsResult, error) {
-			return client.GetVoteAccounts(ctx, &rpc.GetVoteAccountsOpts{
-				Commitment: rpc.CommitmentProcessed,
-			})
+			return client.GetVoteAccounts(ctx, opts)
 		},
 	})
 }

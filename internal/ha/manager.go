@@ -143,10 +143,11 @@ func (m *Manager) initialize() error {
 	// create gossip state
 	m.logger.Debug("creating gossip state")
 	m.gossipState = gossip.NewState(gossip.Options{
-		ClusterRPC:   rpc.NewClient(m.logPrefix, m.cfg.Cluster.RPCURLs...),
-		ActivePubkey: m.cfg.Validator.Identities.ActiveKeyPair.PublicKey().String(),
-		ConfigPeers:  m.cfg.Failover.Peers,
-		LogPrefix:    m.logPrefix,
+		ClusterRPC:                     rpc.NewClient(m.logPrefix, m.cfg.Cluster.RPCURLs...),
+		ActivePubkey:                   m.cfg.Validator.Identities.ActiveKeyPair.PublicKey().String(),
+		ConfigPeers:                    m.cfg.Failover.Peers,
+		DelinquentSlotDistanceOverride: m.cfg.Failover.DelinquentSlotDistanceOverride,
+		LogPrefix:                      m.logPrefix,
 	})
 
 	m.logger.Debug("initialized")

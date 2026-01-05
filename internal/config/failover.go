@@ -8,13 +8,20 @@ import (
 
 // Failover represents failover decision parameters
 type Failover struct {
-	DryRun                     bool          `koanf:"dry_run"`
-	PollIntervalDuration       time.Duration `koanf:"poll_interval_duration"`
-	LeaderlessSamplesThreshold int           `koanf:"leaderless_samples_threshold"`
-	TakeoverJitterDuration     time.Duration `koanf:"takeover_jitter_duration"`
-	Active                     Role          `koanf:"active"`
-	Passive                    Role          `koanf:"passive"`
-	Peers                      Peers         `koanf:"peers"`
+	DryRun                         bool                           `koanf:"dry_run"`
+	PollIntervalDuration           time.Duration                  `koanf:"poll_interval_duration"`
+	LeaderlessSamplesThreshold     int                            `koanf:"leaderless_samples_threshold"`
+	TakeoverJitterDuration         time.Duration                  `koanf:"takeover_jitter_duration"`
+	Active                         Role                           `koanf:"active"`
+	Passive                        Role                           `koanf:"passive"`
+	Peers                          Peers                          `koanf:"peers"`
+	DelinquentSlotDistanceOverride DelinquentSlotDistanceOverride `koanf:"delinquent_slot_distance_override"`
+}
+
+// DelinquentSlotDistanceOverride represents an sdk override for the delinquent slot distance
+type DelinquentSlotDistanceOverride struct {
+	Enabled bool  `koanf:"enabled"`
+	Value   int64 `koanf:"value"`
 }
 
 func (f *Failover) Validate() error {
@@ -93,6 +100,11 @@ func (f *Failover) Validate() error {
 			return fmt.Errorf("failover.peers - duplicate IP address %s found for peer %s", peer.IP, name)
 		}
 		ips[peer.IP] = true
+	}
+
+	// failover.delinquent_slot_distance_override.value must be a reasonable
+	if f.DelinquentSlotDistanceOverride.Enabled && f.DelinquentSlotDistanceOverride.Value < 0 {
+		return fmt.Errorf("failover.delinquent_slot_distance_override.value must be >= 0 - got %d", f.DelinquentSlotDistanceOverride.Value)
 	}
 
 	return nil

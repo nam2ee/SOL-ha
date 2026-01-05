@@ -190,6 +190,16 @@ func (c *Config) validate() error {
 		c.logger.Warn("failover.takeover_jitter_duration is below 1s - this may void the usefulness of jitter in preventing race conditions")
 	}
 
+	// failover.deliquent_slot_distance_override is enabled - print warning
+	if c.Failover.DelinquentSlotDistanceOverride.Enabled {
+		// delinquentSlotDistanceDuration estimated duration behind given 400ms slot time
+		delinquentSlotDistanceDuration := time.Duration(c.Failover.DelinquentSlotDistanceOverride.Value) * 400 * time.Millisecond
+		c.logger.Warnf("failover.deliquent_slot_distance_override enabled - nodes considered delinquent if behind by more than %d slots (~%s)",
+			c.Failover.DelinquentSlotDistanceOverride.Value,
+			delinquentSlotDistanceDuration,
+		)
+	}
+
 	return nil
 }
 
