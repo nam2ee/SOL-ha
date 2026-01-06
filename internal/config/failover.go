@@ -20,8 +20,8 @@ type Failover struct {
 
 // DelinquentSlotDistanceOverride represents an sdk override for the delinquent slot distance
 type DelinquentSlotDistanceOverride struct {
-	Enabled bool  `koanf:"enabled"`
-	Value   int64 `koanf:"value"`
+	Enabled bool   `koanf:"enabled"`
+	Value   uint64 `koanf:"value"`
 }
 
 func (f *Failover) Validate() error {
@@ -102,10 +102,8 @@ func (f *Failover) Validate() error {
 		ips[peer.IP] = true
 	}
 
-	// failover.delinquent_slot_distance_override.value must be a reasonable
-	if f.DelinquentSlotDistanceOverride.Enabled && f.DelinquentSlotDistanceOverride.Value < 0 {
-		return fmt.Errorf("failover.delinquent_slot_distance_override.value must be >= 0 - got %d", f.DelinquentSlotDistanceOverride.Value)
-	}
+	// Note: DelinquentSlotDistanceOverride.Value is uint64, so it cannot be negative
+	// No validation needed for negative values since uint64 cannot hold negative numbers
 
 	return nil
 }

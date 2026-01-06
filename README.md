@@ -247,24 +247,25 @@ failover:
   #   In the event of a failover event, dry-run commands (use this to test the waters :-)
   dry_run: false
 
-  # deliquent_slot_distance_override
+  # delinquent_slot_distance_override
   # description:
-  #   When enabled=tue, use the supplied value as the slots-behind threshold to determine node delinquency.
-  deliquent_slot_distance_override:
+  #   When enabled=true, use the supplied value as the slots-behind threshold to determine node delinquency.
+  delinquent_slot_distance_override:
 
     # enabled
     # default: false
     # description:
-    #   When determining node deliquency, use the supplied delinquent_slot_distance_override.value
+    #   When determining node delinquency, use the supplied delinquent_slot_distance_override.value
     enabled: false
 
     # value
     # default: 0
     # description:
-    #   When deliquent_slot_distance_override.enabled is true, use this value to determine
+    #   When delinquent_slot_distance_override.enabled is true, use this value to determine
     #   how many slots behind the tip a node should be considered delinquent. 
     #   ⚠️ Set with caution to avoid false positives due to transient network issues and such like.
-    #  For reference, the "current" threshold is 150 slots (~60s)
+    #  For reference, the "current" threshold is 150 slots (~60s) and values <= 1 will be set to 2 on startup
+    #  as a safety mechanism to prevent false positives due to transient issues.
     value: 150
 
   # poll_inverval_duration
