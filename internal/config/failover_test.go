@@ -90,20 +90,12 @@ func TestFailover_Validate(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failover.peers - duplicate IP address")
 
-	// Test with delinquent slot distance override enabled with negative value (should fail)
+	// Test with delinquent slot distance override enabled with zero value (should pass)
+	// Reset peers to valid values first
 	failover.Peers = Peers{
 		"validator-1": {IP: "192.168.1.10"},
 		"validator-2": {IP: "192.168.1.11"},
 	}
-	failover.DelinquentSlotDistanceOverride = DelinquentSlotDistanceOverride{
-		Enabled: true,
-		Value:   -1,
-	}
-	err = failover.Validate()
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failover.delinquent_slot_distance_override.value must be >= 0")
-
-	// Test with delinquent slot distance override enabled with zero value (should pass)
 	failover.DelinquentSlotDistanceOverride = DelinquentSlotDistanceOverride{
 		Enabled: true,
 		Value:   0,
@@ -119,10 +111,10 @@ func TestFailover_Validate(t *testing.T) {
 	err = failover.Validate()
 	assert.NoError(t, err)
 
-	// Test with delinquent slot distance override disabled (should pass regardless of value, even negative)
+	// Test with delinquent slot distance override disabled (should pass regardless of value)
 	failover.DelinquentSlotDistanceOverride = DelinquentSlotDistanceOverride{
 		Enabled: false,
-		Value:   -1, // Even with negative value, if disabled it should pass
+		Value:   0, // When disabled, value doesn't matter
 	}
 	err = failover.Validate()
 	assert.NoError(t, err)

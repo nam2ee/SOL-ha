@@ -253,8 +253,7 @@ func (p *State) isNodeActiveAndVoting(node solanagorpc.GetClusterNodesResult) bo
 
 	// if configured, override the sdk delinquent slot distance value with a config-supplied value
 	if p.delinquentSlotDistanceOverride.Enabled {
-		delinquentSlotDistance := uint64(p.delinquentSlotDistanceOverride.Value)
-		getVoteAccountsOpts.DelinquentSlotDistance = &delinquentSlotDistance
+		getVoteAccountsOpts.DelinquentSlotDistance = &p.delinquentSlotDistanceOverride.Value
 	}
 
 	// get vote accounts to look for our node within
@@ -290,7 +289,7 @@ func (p *State) isNodeActiveAndVoting(node solanagorpc.GetClusterNodesResult) bo
 		}
 
 		// ohhh shit! we're delinquent - snitch on this guy!
-		p.logger.Error("‼️ node is delinquent - not voting",
+		p.logger.Error(fmt.Sprintf("‼️ node is delinquent - not voting (%d slots behind)", currentSlot-delinquentVoteAccount.LastVote),
 			"gossip_address", *node.Gossip,
 			"pubkey", node.Pubkey.String(),
 			"current_slot", currentSlot,
