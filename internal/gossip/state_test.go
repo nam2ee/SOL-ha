@@ -422,3 +422,92 @@ func TestState_ConcurrentAccess(t *testing.T) {
 	// If we get here without panicking, the methods are thread-safe
 	assert.True(t, true)
 }
+
+func TestPeerIPRankMap(t *testing.T) {
+	realRPC := rpc.NewClient("test", "https://api.mainnet-beta.solana.com")
+
+	opts := Options{
+		ClusterRPC:   realRPC,
+		ActivePubkey: "test-active-pubkey",
+		SelfIP:       "192.168.1.1",
+		ConfigPeers:  map[string]config.Peer{},
+	}
+
+	state := NewState(opts)
+
+	// Test with empty state
+	rankMap := state.PeerIPRankMap()
+	assert.Empty(t, rankMap)
+
+	// Test with multiple peers - IPs should be sorted and ranked zero-indexed
+	state.peerStatesByName = map[string]PeerState{
+		"peer1": {IP: "192.168.1.30", Pubkey: "pubkey1", LastSeenAtUTC: time.Now().UTC(), LastSeenActive: false},
+		"peer2": {IP: "192.168.1.10", Pubkey: "pubkey2", LastSeenAtUTC: time.Now().UTC(), LastSeenActive: false},
+		"peer3": {IP: "192.168.1.20", Pubkey: "pubkey3", LastSeenAtUTC: time.Now().UTC(), LastSeenActive: false},
+	}
+
+	rankMap = state.PeerIPRankMap()
+
+	// IPs should be sorted: 10, 20, 30
+	// So ranks should be: 10 -> 0, 20 -> 1, 30 -> 2
+	assert.Equal(t, 0, rankMap["192.168.1.10"], "192.168.1.10 should have rank 0 (lowest IP)")
+	assert.Equal(t, 1, rankMap["192.168.1.20"], "192.168.1.20 should have rank 1")
+	assert.Equal(t, 2, rankMap["192.168.1.30"], "192.168.1.30 should have rank 2 (highest IP)")
+	assert.Len(t, rankMap, 3)
+
+	// Test with single peer
+	state.peerStatesByName = map[string]PeerState{
+		"peer1": {IP: "192.168.1.10", Pubkey: "pubkey1", LastSeenAtUTC: time.Now().UTC(), LastSeenActive: false},
+	}
+
+	rankMap = state.PeerIPRankMap()
+	assert.Equal(t, 0, rankMap["192.168.1.10"], "single peer should have rank 0")
+	assert.Len(t, rankMap, 1)
+}
+
+func TestGetSortedIPs(t *testing.T) {
+	realRPC := rpc.NewClient("test", "https://api.mainnet-beta.solana.com")
+
+	opts := Options{
+		ClusterRPC:   realRPC,
+		ActivePubkey: "test-active-pubkey",
+		SelfIP:       "192.168.1.1",
+		ConfigPeers:  map[string]config.Peer{},
+	}
+
+	state := NewState(opts)
+
+	// Test with empty state
+	sortedIPs := state.getSortedIPs()
+	assert.Empty(t, sortedIPs)
+
+	// Test with multiple peers - should return sorted IPs
+	state.peerStatesByName = map[string]PeerState{
+		"peer1": {IP: "192.168.1.30", Pubkey: "pubkey1", LastSeenAtUTC: time.Now().UTC(), LastSeenActive: false},
+		"peer2": {IP: "192.168.1.10", Pubkey: "pubkey2", LastSeenAtUTC: time.Now().UTC(), LastSeenActive: false},
+		"peer3": {IP: "192.168.1.20", Pubkey: "pubkey3", LastSeenAtUTC: time.Now().UTC(), LastSeenActive: false},
+	}
+
+	sortedIPs = state.getSortedIPs()
+	expected := []string{"192.168.1.10", "192.168.1.20", "192.168.1.30"}
+	assert.Equal(t, expected, sortedIPs, "IPs should be sorted in ascending order")
+
+	// Test with single peer
+	state.peerStatesByName = map[string]PeerState{
+		"peer1": {IP: "192.168.1.10", Pubkey: "pubkey1", LastSeenAtUTC: time.Now().UTC(), LastSeenActive: false},
+	}
+
+	sortedIPs = state.getSortedIPs()
+	assert.Equal(t, []string{"192.168.1.10"}, sortedIPs)
+
+	// Test with IPs that have different octets to ensure proper string sorting
+	state.peerStatesByName = map[string]PeerState{
+		"peer1": {IP: "10.0.0.1", Pubkey: "pubkey1", LastSeenAtUTC: time.Now().UTC(), LastSeenActive: false},
+		"peer2": {IP: "192.168.1.1", Pubkey: "pubkey2", LastSeenAtUTC: time.Now().UTC(), LastSeenActive: false},
+		"peer3": {IP: "172.16.0.1", Pubkey: "pubkey3", LastSeenAtUTC: time.Now().UTC(), LastSeenActive: false},
+	}
+
+	sortedIPs = state.getSortedIPs()
+	expected = []string{"10.0.0.1", "172.16.0.1", "192.168.1.1"}
+	assert.Equal(t, expected, sortedIPs, "IPs should be sorted lexicographically")
+}

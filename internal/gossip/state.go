@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -235,6 +236,25 @@ func (p *State) Refresh() {
 	p.peerStatesByName = latestPeerStatesByName
 	p.PeerStatesRefreshedAt = time.Now().UTC()
 	p.logger.Debug("peers state refreshed", "peer_count", len(p.peerStatesByName))
+}
+
+// PeerIPRankMap returns a map of IP addresses to their zero-indexed rank in the sorted list of IPs
+func (p *State) PeerIPRankMap() map[string]int {
+	ipRankMap := make(map[string]int)
+	for ipIndex, ip := range p.getSortedIPs() {
+		ipRankMap[ip] = ipIndex
+	}
+	return ipRankMap
+}
+
+// getSortedIPs returns a an ascendings ordered list of IP addresses from the peerStatesByName map
+func (p *State) getSortedIPs() []string {
+	ips := []string{}
+	for _, peerState := range p.peerStatesByName {
+		ips = append(ips, peerState.IP)
+	}
+	sort.Strings(ips)
+	return ips
 }
 
 // isNodeActiveAndVoting returns true if the node is active and voting

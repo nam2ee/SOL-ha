@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 )
 
@@ -37,29 +36,4 @@ func (p *Peers) String() string {
 		peerStrings = append(peerStrings, fmt.Sprintf("%s:%s", name, peer.IP))
 	}
 	return fmt.Sprintf("[%s]", strings.Join(peerStrings, " "))
-}
-
-// GetIPs returns the IP addresses of the peers
-func (p *Peers) GetIPs() []string {
-	ips := []string{}
-	for _, peer := range *p {
-		ips = append(ips, peer.IP)
-	}
-	return ips
-}
-
-// GetRankedIPs returns the IP addresses in ascending order
-// this is arbitrary but used to impose some portable guaranteed
-// rank among peers without sharing any other configuration
-func (p *Peers) GetRankedIPs() (rankedIPs map[string]int) {
-	rankedIPs = make(map[string]int)
-	ips := p.GetIPs()
-	sort.Strings(ips)
-
-	// ips are sorted in ascending order now
-	for ipIndex, ip := range ips {
-		rankedIPs[ip] = ipIndex + 1
-	}
-
-	return rankedIPs
 }
