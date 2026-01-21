@@ -615,7 +615,8 @@ func (m *Manager) refreshMetrics() {
 // to safeguard against multiple nodes trying to become active at the same time
 func (m *Manager) delayTakeoverAsActive() (err error) {
 	// peerCount includes ourselves, so if we are the only peer, we don't need to delay
-	if m.gossipState.PeerCount() == 0 {
+	peerCount := m.gossipState.PeerCount()
+	if peerCount == 0 {
 		return fmt.Errorf("no peers found - unable to delay takeover")
 	}
 
@@ -629,14 +630,14 @@ func (m *Manager) delayTakeoverAsActive() (err error) {
 	}
 
 	if selfPeerRank == 0 {
-		m.logger.Info("this node is IP-ranked 0 in gossip state - no takeover delay")
+		m.logger.Info(fmt.Sprintf("this node is peer IP ranked 0/%d in gossip state - no takeover delay", peerCount))
 		return nil
 	}
 
 	// peers with ranks 1 and over have a deterministic delay of rank*poll_interval_duration
 	delay := time.Duration(selfPeerRank) * m.cfg.Failover.PollIntervalDuration
 
-	m.logger.Warn(fmt.Sprintf("delaying takeover by %s (<rank %d> * <%s poll_interval_duration>) to avoid race condition with higher ranked peer in gossip state", delay, selfPeerRank, m.cfg.Failover.PollIntervalDuration))
+	m.logger.Warn(fmt.Sprintf("delaying takeover by %s (<rank %d (of %d peers)> * <%s poll_interval_duration>) to avoid race condition with higher ranked peer in gossip state", delay, selfPeerRank, peerCount, m.cfg.Failover.PollIntervalDuration))
 	time.Sleep(delay)
 	m.logger.Warn("takeover delay complete")
 	return nil
