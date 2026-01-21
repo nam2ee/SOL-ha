@@ -247,6 +247,11 @@ func (p *State) PeerIPRankMap() map[string]int {
 	return ipRankMap
 }
 
+// PeerCount returns the number of peers in the gossip state
+func (p *State) PeerCount() int {
+	return len(p.peerStatesByName)
+}
+
 // getSortedIPs returns a an ascendings ordered list of IP addresses from the peerStatesByName map
 func (p *State) getSortedIPs() []string {
 	ips := []string{}

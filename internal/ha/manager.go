@@ -615,7 +615,7 @@ func (m *Manager) refreshMetrics() {
 // to safeguard against multiple nodes trying to become active at the same time
 func (m *Manager) delayTakeoverAsActive() (err error) {
 	// peerCount includes ourselves, so if we are the only peer, we don't need to delay
-	if m.peerCount == 0 {
+	if m.gossipState.PeerCount() == 0 {
 		return fmt.Errorf("no peers found - unable to delay takeover")
 	}
 
