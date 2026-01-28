@@ -31,6 +31,7 @@ type State struct {
 	activePeerLastSeenAt           time.Time
 	LeaderlessSamplesCount         int
 	delinquentSlotDistanceOverride config.DelinquentSlotDistanceOverride
+	lastRefreshHadRPCError         bool
 }
 
 // PeerState represents the state of a peer as seen by the solana network
@@ -81,11 +82,13 @@ func (p *State) Refresh() {
 	// to check for failovers
 	clusterNodes, err := p.clusterRPC.GetClusterNodes(context.Background())
 	if err != nil {
+		p.lastRefreshHadRPCError = true
 		p.peerStatesByName = latestPeerStatesByName
 		p.PeerStatesRefreshedAt = time.Now().UTC()
 		p.logger.Error("failed to get cluster nodes", "error", err)
 		return
 	}
+	p.lastRefreshHadRPCError = false
 
 	p.logger.Debug("looking for peers in gossip",
 		"cluster_nodes_count", len(clusterNodes),
@@ -433,6 +436,11 @@ func (p *State) HasPeers(ip string) bool {
 		}
 	}
 	return false
+}
+
+// LastRefreshHadRPCError returns true if the last Refresh() call failed due to RPC error
+func (p *State) LastRefreshHadRPCError() bool {
+	return p.lastRefreshHadRPCError
 }
 
 // GetPeerStates returns the current peer states

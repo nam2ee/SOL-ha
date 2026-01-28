@@ -286,11 +286,27 @@ func (m *Manager) ensureHAState() {
 	// we see no active peer in the last failover.leaderless_samples_threshold, so we need to failover
 	m.logger.Error(fmt.Sprintf("no active peer found in the last %d samples - failover required", m.gossipState.LeaderlessSamplesCount))
 
-	// if we don't see ourselves in gossip - bow out of the failover process and make sure we are passive - disconnection or starting up
+	// if we don't see ourselves in gossip - evaluate whether to become passive
 	if m.isSelfNotInGossip() {
-		m.logger.Error("we do not appear in gossip - unable to become active in failover, ensuring we are passive")
+		// If RPC failed, we likely have network connectivity issues - become passive
+		if m.gossipState.LastRefreshHadRPCError() {
+			m.logger.Error("we do not appear in gossip due to RPC error (possible network connectivity issue) - ensuring we are passive")
+			m.ensurePassive()
+			return
+		}
+
+		// RPC succeeded but we're not in the results
+		// Check if there are other peers visible that could take over
+		if !m.gossipState.HasPeers(m.peerSelf.IP) {
+			// No other peers visible either - we might be the last node standing
+			// Don't call ensurePassive to avoid taking the entire cluster offline
+			m.logger.Warn("we do not appear in gossip and no other peers are visible (but RPC is working) - skipping ensurePassive to avoid taking entire cluster offline")
+			return
+		}
+
+		// Other peers are visible and could take over - safe to become passive
+		m.logger.Error("we do not appear in gossip but other peers are visible - ensuring we are passive so a peer can take over")
 		m.ensurePassive()
-		// m.gossipState.Refresh() // refresh gossip state for clean next run
 		return
 	}
 	m.logger.Debug("we are in gossip", "pubkey", m.selfGossipPubkey(), "public_ip", m.peerSelf.IP)
