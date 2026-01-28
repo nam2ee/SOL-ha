@@ -186,8 +186,8 @@ func (c *Config) validate() error {
 	}
 
 	// failover.takeover_jitter_duration if below 1s print warning
-	if c.Failover.TakeoverJitterDuration > 0 && c.Failover.TakeoverJitterDuration < time.Second {
-		c.logger.Warn("failover.takeover_jitter_duration is below 1s - this may void the usefulness of jitter in preventing race conditions")
+	if c.Failover.TakeoverJitterDuration > 0 {
+		c.logger.Warn("failover.takeover_jitter_duration is deprecated and this value will be ignored - takeover delays are now deterministic based on <zero-indexed gossip state IP rank>*<poll_interval_duration>")
 	}
 
 	// failover.delinquent_slot_distance_override enabled but distance is too short - warn that it will be set to a safer value

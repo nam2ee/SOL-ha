@@ -3,7 +3,6 @@ package ha
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"net/http"
 	"strconv"
 	"time"
@@ -312,21 +311,25 @@ func (m *Manager) ensureHAState() {
 	// so we begin checks to make sure none of our peers have already taken over as active
 
 	// introduce a delay based on IP to safeguard against multiple nodes trying to become active at the same time
-	m.delayTakeover()
+	err := m.delayTakeoverAsActive()
+	if err != nil {
+		m.logger.Error(err.Error())
+		return
+	}
 
-	// refresh the peers state to ensure no one else has taken over already if we know
-	// there are at least 2 possible peers other than ourselves - this will reset the leaderless samples count
+	// refresh the peers state to ensure no one else has taken over already - this will reset the leaderless samples count
 	// if a new leader is found
 	m.gossipState.Refresh()
 
-	// if someone has already taken over as active - say so and return
+	// if someone has already taken over as active - say so
+	// TODO: refactor logic, it works but the situation is a little confusing
 	if m.gossipState.LeaderlessSamplesBelowThreshold(m.cfg.Failover.LeaderlessSamplesThreshold) {
 		activePeerState, err := m.gossipState.GetActivePeer()
 		if err != nil {
 			m.logger.Warn("failed to get active peer from state, but we know someone else already assumed active role", "error", err)
 			return
 		}
-		m.logger.Warn(fmt.Sprintf("peer %s is active, seen at %s - noting to do", activePeerState.Name, activePeerState.LastSeenAtString()),
+		m.logger.Warn(fmt.Sprintf("peer %s is active, seen at %s - nothing to do", activePeerState.Name, activePeerState.LastSeenAtString()),
 			"ip", activePeerState.IP,
 			"pubkey", activePeerState.Pubkey,
 		)
@@ -608,35 +611,34 @@ func (m *Manager) refreshMetrics() {
 	)
 }
 
-// delayTakeover introduces a delay when there are multiple peers
+// delayTakeoverAsActive introduces a delay when there are multiple peers
 // to safeguard against multiple nodes trying to become active at the same time
-func (m *Manager) delayTakeover() {
-	if m.peerCount <= 1 {
-		return
+func (m *Manager) delayTakeoverAsActive() (err error) {
+	// peerCount includes ourselves, so if we are the only peer, we don't need to delay
+	peerCount := m.gossipState.PeerCount()
+	if peerCount == 0 {
+		return fmt.Errorf("no peers found - unable to delay takeover")
 	}
 
-	// get the peer rank - artificial ordering of peers by IP so that it is common across all nodes
-	// running this function
-	selfPeerRank := len(m.cfg.Failover.Peers) + 1
+	// get self peer rank in the ranked list (zero indexed), not being in this list shouldn't
+	// happen but we check anyway to be safe
+	rankedPeerIPs := m.gossipState.PeerIPRankMap()
+	selfPeerRank, selfInRankedPeerIPs := rankedPeerIPs[m.peerSelf.IP]
 
-	// if find yourself in the ranked list, use that rank
-	if rank, ok := m.cfg.Failover.Peers.GetRankedIPs()[m.peerSelf.IP]; ok {
-		selfPeerRank = rank
+	if !selfInRankedPeerIPs {
+		return fmt.Errorf("unable to find this node's IP %s in the IP-ranked list of peers in gossip state: %v", m.peerSelf.IP, rankedPeerIPs)
 	}
 
-	// set delay seconds based on rank
-	delay := time.Duration(selfPeerRank) * time.Second
-
-	// add random jitter to the delay to safeguard against multiple nodes trying to become active at the same time
-	// generate a random delay between 0 and TakeoverJitterDuration (inclusive)
-	jitterNanos := m.cfg.Failover.TakeoverJitterDuration.Nanoseconds()
-	if jitterNanos > 0 {
-		// rand.Int63n(n) returns [0, n), so we use n+1 to make it inclusive [0, n]
-		randomJitterNanos := rand.Int63n(jitterNanos + 1)
-		delay += time.Duration(randomJitterNanos)
+	if selfPeerRank == 0 {
+		m.logger.Info(fmt.Sprintf("this node is peer IP ranked 0/%d in gossip state - no takeover delay", peerCount))
+		return nil
 	}
 
-	m.logger.Debug("delaying takeover to avoid race conditions", "delay", delay, "self_peer_rank", selfPeerRank)
+	// peers with ranks 1 and over have a deterministic delay of rank*poll_interval_duration
+	delay := time.Duration(selfPeerRank) * m.cfg.Failover.PollIntervalDuration
+
+	m.logger.Warn(fmt.Sprintf("delaying takeover by %s (<rank %d (of %d peers)> * <%s poll_interval_duration>) to avoid race condition with higher ranked peer in gossip state", delay, selfPeerRank, peerCount, m.cfg.Failover.PollIntervalDuration))
 	time.Sleep(delay)
-	m.logger.Debug("takeover delay complete", "self_peer_rank", selfPeerRank)
+	m.logger.Warn("takeover delay complete")
+	return nil
 }

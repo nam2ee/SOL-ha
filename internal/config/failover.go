@@ -132,9 +132,6 @@ func (f *Failover) SetDefaults() {
 	if f.LeaderlessSamplesThreshold == 0 {
 		f.LeaderlessSamplesThreshold = 3 //  3 x poll interval = (at least) 15 seconds
 	}
-	if f.TakeoverJitterDuration == 0 {
-		f.TakeoverJitterDuration = 3 * time.Second
-	}
 
 	// Set role names
 	f.Active.Name = "active"
