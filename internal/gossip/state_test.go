@@ -268,6 +268,82 @@ func TestRefresh_WithRPCError(t *testing.T) {
 	assert.Empty(t, state.GetPeerStates())
 }
 
+func TestLastRefreshHadRPCError(t *testing.T) {
+	t.Run("returns true after RPC error", func(t *testing.T) {
+		// Use an invalid URL to simulate RPC failure
+		invalidRPC := rpc.NewClient("test", "https://invalid-url-that-will-fail.com")
+
+		opts := Options{
+			ClusterRPC:   invalidRPC,
+			ActivePubkey: "test-active-pubkey",
+			SelfIP:       "192.168.1.1",
+			ConfigPeers: map[string]config.Peer{
+				"peer1": {IP: "192.168.1.2", Name: "peer1"},
+			},
+		}
+
+		state := NewState(opts)
+
+		// Initially should be false
+		assert.False(t, state.LastRefreshHadRPCError())
+
+		// Refresh with invalid RPC should set the flag to true
+		state.Refresh()
+
+		assert.True(t, state.LastRefreshHadRPCError())
+	})
+
+	t.Run("returns false after successful RPC", func(t *testing.T) {
+		// Use a valid RPC endpoint
+		validRPC := rpc.NewClient("test", "https://api.mainnet-beta.solana.com")
+
+		opts := Options{
+			ClusterRPC:   validRPC,
+			ActivePubkey: "test-active-pubkey",
+			SelfIP:       "192.168.1.1",
+			ConfigPeers: map[string]config.Peer{
+				"peer1": {IP: "192.168.1.2", Name: "peer1"},
+			},
+		}
+
+		state := NewState(opts)
+
+		// Manually set the flag to true to simulate previous error
+		state.lastRefreshHadRPCError = true
+
+		// Refresh with valid RPC should clear the flag
+		state.Refresh()
+
+		assert.False(t, state.LastRefreshHadRPCError())
+	})
+
+	t.Run("flag reflects most recent refresh state", func(t *testing.T) {
+		invalidRPC := rpc.NewClient("test", "https://invalid-url-that-will-fail.com")
+
+		opts := Options{
+			ClusterRPC:   invalidRPC,
+			ActivePubkey: "test-active-pubkey",
+			SelfIP:       "192.168.1.1",
+			ConfigPeers:  map[string]config.Peer{},
+		}
+
+		state := NewState(opts)
+
+		// First refresh fails
+		state.Refresh()
+		assert.True(t, state.LastRefreshHadRPCError())
+
+		// Simulate successful refresh by manually setting the flag
+		// (In real scenario, this would happen with a working RPC)
+		state.lastRefreshHadRPCError = false
+		assert.False(t, state.LastRefreshHadRPCError())
+
+		// Another failed refresh
+		state.Refresh()
+		assert.True(t, state.LastRefreshHadRPCError())
+	})
+}
+
 func TestRefresh_WithValidRPC(t *testing.T) {
 	// Test Refresh with a valid RPC client
 	// This test may fail if the RPC endpoint is not available, but that's expected
