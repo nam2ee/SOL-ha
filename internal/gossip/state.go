@@ -3,7 +3,6 @@ package gossip
 import (
 	"context"
 	"fmt"
-	"net"
 	"slices"
 	"sort"
 	"strings"
@@ -32,6 +31,8 @@ type State struct {
 	LeaderlessSamplesCount         int
 	delinquentSlotDistanceOverride config.DelinquentSlotDistanceOverride
 	lastRefreshHadRPCError         bool
+	// peerLastSeenAtByName tracks the last time each peer was seen in gossip, persists even when peer goes missing
+	peerLastSeenAtByName map[string]time.Time
 }
 
 // PeerState represents the state of a peer as seen by the solana network
@@ -69,6 +70,7 @@ func NewState(opts Options) *State {
 		selfIP:                         opts.SelfIP,
 		configPeers:                    opts.ConfigPeers,
 		peerStatesByName:               make(map[string]PeerState),
+		peerLastSeenAtByName:           make(map[string]time.Time),
 		delinquentSlotDistanceOverride: opts.DelinquentSlotDistanceOverride,
 	}
 }
@@ -114,16 +116,10 @@ func (p *State) Refresh() {
 			continue
 		}
 
-		// if the node is not alive (can dial its gossip address) it's dead to us - gossip response is stale
-		if !p.isNodeGossipAlive(*node) {
-			p.logger.Debug("node gossip address not alive - excluding from state",
-				"peer_name", peerName,
-				"ip", nodeIP,
-				"gossip_address", *node.Gossip,
-				"pubkey", node.Pubkey.String(),
-			)
-			continue
-		}
+		// Note: We trust gossip presence as a liveness indicator. The gossip protocol
+		// uses UDP and has built-in expiration for stale entries (GOSSIP_PULL_CRDS_TIMEOUT_MS).
+		// TCP probing the gossip port is unreliable since providers may block TCP while
+		// allowing UDP, causing false negatives for healthy nodes.
 
 		// lastSeenActive
 		isActivePeer := node.Pubkey.String() == p.activePubkey
@@ -135,7 +131,7 @@ func (p *State) Refresh() {
 			continue
 		}
 
-		// now we know the peer is alive and voting (if it is an active node) - so we can add it to the state
+		// now we know the peer is in gossip and voting (if it is an active node) - so we can add it to the state
 
 		// add the peer to the peerEntries
 		peerState := PeerState{
@@ -149,6 +145,9 @@ func (p *State) Refresh() {
 
 		// register the peer state
 		latestPeerStatesByName[peerName] = peerState
+
+		// track last seen time for this peer (persists even when peer goes missing)
+		p.peerLastSeenAtByName[peerName] = peerState.LastSeenAtUTC
 
 		// update state's activePeerLastSeenAt
 		if peerState.LastSeenActive {
@@ -213,7 +212,11 @@ func (p *State) Refresh() {
 
 		// warn if peer was in the old state but is now missing
 		if p.HasIP(ip) {
-			p.logger.Warn("peer lost", "name", name, "ip", ip)
+			lastSeenAt := ""
+			if lastSeen, ok := p.peerLastSeenAtByName[name]; ok {
+				lastSeenAt = lastSeen.Format(time.RFC3339Nano)
+			}
+			p.logger.Warn("peer lost", "name", name, "ip", ip, "last_seen_at", lastSeenAt)
 			continue
 		}
 
@@ -238,7 +241,77 @@ func (p *State) Refresh() {
 	p.missingGossipIPs = latestMissingGossipIPs
 	p.peerStatesByName = latestPeerStatesByName
 	p.PeerStatesRefreshedAt = time.Now().UTC()
-	p.logger.Debug("peers state refreshed", "peer_count", len(p.peerStatesByName))
+	p.logger.Info(p.peersStateString())
+}
+
+// peersStateString returns a string representation of all configured peers for logging
+// format: discovered N/<total_configured_peers> configured peers: [<emoji> <active|passive|missing> <peer_name> <peer_ip> rank=<peer_ip_rank>/<total_ip_ranks> last_seen_at=<peer_last_seen_at_utc_with_nanoseconds>] ...
+// where emoji is 🟢 for active, 🟡 for passive, and 🔴 for missing
+// displayed in ascending order of ip rank
+func (p *State) peersStateString() string {
+	if len(p.configPeers) == 0 {
+		return ""
+	}
+
+	// Collect configured peers and sort by IP
+	type peerInfo struct {
+		name       string
+		ip         string
+		discovered bool
+		active     bool
+		lastSeenAt string
+	}
+
+	peers := make([]peerInfo, 0, len(p.configPeers))
+	discoveredCount := 0
+	for name, configPeer := range p.configPeers {
+		info := peerInfo{
+			name: name,
+			ip:   configPeer.IP,
+		}
+		if state, ok := p.peerStatesByName[name]; ok {
+			info.discovered = true
+			info.active = state.LastSeenActive
+			info.lastSeenAt = state.LastSeenAtUTC.Format(time.RFC3339Nano)
+			discoveredCount++
+		} else if lastSeen, ok := p.peerLastSeenAtByName[name]; ok {
+			// peer is missing but we have a record of when it was last seen
+			info.lastSeenAt = lastSeen.Format(time.RFC3339Nano)
+		}
+		peers = append(peers, info)
+	}
+	sort.Slice(peers, func(i, j int) bool {
+		return peers[i].ip < peers[j].ip
+	})
+
+	// Build output
+	var sb strings.Builder
+	numPeers := len(peers)
+
+	fmt.Fprintf(&sb, "discovered %d/%d configured peers", discoveredCount, numPeers)
+
+	for rank, peer := range peers {
+		// Determine status and emoji: active (🟢), passive (🟡), or missing (🔴)
+		var emoji, status string
+		if peer.discovered {
+			if peer.active {
+				emoji = "🟢"
+				status = "active"
+			} else {
+				emoji = "🟡"
+				status = "passive"
+			}
+		} else {
+			emoji = "🔴"
+			status = "missing"
+		}
+
+		sb.WriteByte(' ')
+		fmt.Fprintf(&sb, "[%s %s %s %s rank=%d/%d last_seen_at=%s]",
+			emoji, status, peer.name, peer.ip, rank, numPeers-1, peer.lastSeenAt)
+	}
+
+	return sb.String()
 }
 
 // PeerIPRankMap returns a map of IP addresses to their zero-indexed rank in the sorted list of IPs
@@ -363,26 +436,6 @@ func (p *State) isNodeActiveAndVoting(node solanagorpc.GetClusterNodesResult) bo
 	)
 
 	return true
-}
-
-// isNodeGossipAlive returns true if the node's gossip address is alive
-// Note: We use Gossip port instead of TPU because TPU ports are often firewalled
-// and not reliable indicators of node liveness, while Gossip is more accessible
-func (p *State) isNodeGossipAlive(node solanagorpc.GetClusterNodesResult) bool {
-	// try to dial the gossip address
-	p.logger.Debug("probing for node liveness on gossip address",
-		"gossip_address", *node.Gossip,
-		"pubkey", node.Pubkey.String(),
-	)
-
-	// if we can dial the gossip address, the node is alive
-	conn, err := net.Dial("tcp", *node.Gossip)
-	if err == nil {
-		conn.Close()
-		return true
-	}
-
-	return false
 }
 
 // HasActivePeer returns true if any of the peers are the active validator
