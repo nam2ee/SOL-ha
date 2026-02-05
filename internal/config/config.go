@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -180,6 +181,22 @@ func (c *Config) validate() error {
 		return err
 	}
 
+	// cluster.rpc_urls must not contain the local validator RPC URL
+	// Using local RPC for gossip queries can result in stale data and inconsistent cluster views
+	validatorRPCHost, err := urlHost(c.Validator.RPCURL)
+	if err != nil {
+		return fmt.Errorf("failed to parse validator.rpc_url host: %w", err)
+	}
+	for _, clusterRPCURL := range c.Cluster.RPCURLs {
+		clusterRPCHost, err := urlHost(clusterRPCURL)
+		if err != nil {
+			continue // Already validated in Cluster.Validate()
+		}
+		if clusterRPCHost == validatorRPCHost {
+			return fmt.Errorf("cluster.rpc_urls must not contain the local validator RPC URL (%s) - using local RPC for gossip queries can result in stale data", c.Validator.RPCURL)
+		}
+	}
+
 	// failover.dry_run if true print warning
 	if c.Failover.DryRun {
 		c.logger.Warn("failover.dry_run is true - failovers will dry-run commands only and be no-op")
@@ -218,4 +235,13 @@ func (c *Config) setDefaults() {
 	c.Cluster.SetDefaults()
 	c.Prometheus.SetDefaults()
 	c.Failover.SetDefaults()
+}
+
+// urlHost extracts the host:port from a URL
+func urlHost(rawURL string) (string, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+	return parsed.Host, nil
 }
