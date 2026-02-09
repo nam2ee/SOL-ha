@@ -142,9 +142,9 @@ func (c *Config) Initialize() error {
 	// render failover commands, args and hooks
 	err := c.Failover.RenderRoleCommands(RoleCommandTemplateData{
 		ActiveIdentityKeypairFile:  c.Validator.Identities.ActiveKeyPairFile,
-		ActiveIdentityPubkey:       c.Validator.Identities.ActiveKeyPair.PublicKey().String(),
+		ActiveIdentityPubkey:       c.Validator.Identities.ActivePubkey(),
 		PassiveIdentityKeypairFile: c.Validator.Identities.PassiveKeyPairFile,
-		PassiveIdentityPubkey:      c.Validator.Identities.PassiveKeyPair.PublicKey().String(),
+		PassiveIdentityPubkey:      c.Validator.Identities.PassivePubkey(),
 		SelfName:                   c.Validator.Name,
 	})
 	if err != nil {
