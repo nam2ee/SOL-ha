@@ -161,16 +161,32 @@ validator:
   identities:
 
     # active
-    # required: true
+    # required: true (false if active_pubkey set)
     # description:
     #   Path to active keypair file - this is shared across peers
+    #   When set with active_pubkey, active takes precedence
     active: "/path/to/active-identity.json"
 
+    # active_pubkey
+    # required: true (false if active set)
+    # description:
+    #   base58 encoded pubkey
+    #   When set with active, active_pukey takes precedence
+    active_pubkey: 111111ActivePubkey1111111111111111111111111
+
     # passive
-    # required: true
+    # required: true (false if passive_pubkey set)
     # description:
     #   Path to passive keypair file - this is unique across peers
+    #   When set with passive_pubkey, passive takes precedence
     passive: "/path/to/passive-identity.json"
+
+    # passive_pubkey
+    # required: true (false if passive set)
+    # description:
+    #   base58 encoded pubkey
+    #   When set with passive, passive_pukey takes precedence
+    passive_pubkey: 111111PassivePubkey1111111111111111111111111
 ```
 
 ### Prometheus Configuration
