@@ -131,8 +131,8 @@ func (m *Manager) initialize() error {
 		"public_ip", publicIP,
 		"cluster_rpc_urls", m.cfg.Cluster.RPCURLs,
 		"validator_rpc_url", m.cfg.Validator.RPCURL,
-		"active_pubkey", m.cfg.Validator.Identities.ActiveKeyPair.PublicKey().String(),
-		"passive_pubkey", m.cfg.Validator.Identities.PassiveKeyPair.PublicKey().String(),
+		"active_pubkey", m.cfg.Validator.Identities.ActivePubkey(),
+		"passive_pubkey", m.cfg.Validator.Identities.PassivePubkey(),
 		"peers", m.cfg.Failover.Peers.String(),
 		"failover_dry_run", m.cfg.Failover.DryRun,
 		"prometheus_port", m.cfg.Prometheus.Port,
@@ -143,7 +143,7 @@ func (m *Manager) initialize() error {
 	m.logger.Debug("creating gossip state")
 	m.gossipState = gossip.NewState(gossip.Options{
 		ClusterRPC:                     rpc.NewClient(m.logPrefix, m.cfg.Cluster.RPCURLs...),
-		ActivePubkey:                   m.cfg.Validator.Identities.ActiveKeyPair.PublicKey().String(),
+		ActivePubkey:                   m.cfg.Validator.Identities.ActivePubkey(),
 		ConfigPeers:                    m.cfg.Failover.Peers,
 		DelinquentSlotDistanceOverride: m.cfg.Failover.DelinquentSlotDistanceOverride,
 		LogPrefix:                      m.logPrefix,
@@ -362,7 +362,7 @@ func (m *Manager) ensureHAState() {
 // and the failover.passive.command simply retsarts the validator service or waits for it to start up
 func (m *Manager) ensurePassive() {
 	var err error
-	passivePubkey := m.cfg.Validator.Identities.PassiveKeyPair.PublicKey().String()
+	passivePubkey := m.cfg.Validator.Identities.PassivePubkey()
 	m.logger.Info("becoming passive", "pubkey", passivePubkey)
 
 	// Update failover status in cache
@@ -447,7 +447,7 @@ func (m *Manager) ensurePassive() {
 // and the failover.passive.command simply retsarts the validator service
 func (m *Manager) ensureActive() {
 	var err error
-	activePubkey := m.cfg.Validator.Identities.ActiveKeyPair.PublicKey().String()
+	activePubkey := m.cfg.Validator.Identities.ActivePubkey()
 	m.logger.Info("becoming active", "pubkey", activePubkey)
 
 	// Update failover status in cache
@@ -540,7 +540,7 @@ func (m *Manager) isSelfActive() (isActive bool) {
 		return false
 	}
 
-	return identity.Identity.String() == m.cfg.Validator.Identities.ActiveKeyPair.PublicKey().String()
+	return identity.Identity.String() == m.cfg.Validator.Identities.ActivePubkey()
 }
 
 // isSelfPassive checks if the validator is passive by checking the local RPC client getIdentity response to confirm it is not the active identity
@@ -551,7 +551,7 @@ func (m *Manager) isSelfPassive() bool {
 		return false
 	}
 
-	return identity.Identity.String() != m.cfg.Validator.Identities.ActiveKeyPair.PublicKey().String()
+	return identity.Identity.String() != m.cfg.Validator.Identities.ActivePubkey()
 }
 
 // isNotSelfPassive checks if the validator is not passive by checking the local RPC client getIdentity response to confirm it is not the active identity
