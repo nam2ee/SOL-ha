@@ -31,6 +31,7 @@ type State struct {
 	LeaderlessSamplesCount         int
 	delinquentSlotDistanceOverride config.DelinquentSlotDistanceOverride
 	lastRefreshHadRPCError         bool
+	configUndeclaredActivePeer     PeerState
 	// peerLastSeenAtByName tracks the last time each peer was seen in gossip, persists even when peer goes missing
 	peerLastSeenAtByName map[string]time.Time
 }
@@ -79,6 +80,7 @@ func NewState(opts Options) *State {
 func (p *State) Refresh() {
 	p.logger.Debug("refreshing peers state")
 	latestPeerStatesByName := make(map[string]PeerState)
+	p.configUndeclaredActivePeer = PeerState{} // reset on every refresh
 
 	// get cluster nodes - if this fails we return an empty state, which should cause its consumer
 	// to check for failovers
@@ -103,9 +105,33 @@ func (p *State) Refresh() {
 	isLeaderlessSample := true
 	for _, node := range clusterNodes {
 		nodeIP := strings.Split(*node.Gossip, ":")[0]
+		isActiveNode := node.Pubkey.String() == p.activePubkey
 
-		// if the peer is not the config, keep looking
-		if !p.hasConfigPeerWithIP(nodeIP) {
+		// if the peer is not the config - enjoy the code stench of some nested if statements to figure shit out....
+		if p.isNonConfigDeclaredPeerWithIP(nodeIP) {
+			// register a non-config declared active peer if found to prevent false positive failovers
+			// that will get you in the shit - but only if it is actually voting, otherwise let the
+			// leaderless counter increment as normal so a legitimate failover can still fire
+			if isActiveNode {
+				if !p.isNodeActiveAndVoting(*node) {
+					p.logger.Warn("undeclared active peer appears in gossip but is not voting - ignoring to allow legitimate failover", "ip", nodeIP, "pubkey", node.Pubkey.String())
+					continue
+				}
+
+				// node is active and voting so register it as undeclared active peer
+				isLeaderlessSample = false
+				p.configUndeclaredActivePeer = PeerState{
+					Name:           "config-undeclared-active-peer",
+					IP:             nodeIP,
+					Pubkey:         node.Pubkey.String(),
+					LastSeenAtUTC:  time.Now().UTC(),
+					LastSeenActive: true,
+				}
+				p.activePeerLastSeenAt = p.configUndeclaredActivePeer.LastSeenAtUTC
+				p.logger.Debug("active node discovered not declared as peer in HA cluster config at failover.peers", "ip", nodeIP, "pubkey", node.Pubkey.String())
+			}
+
+			// continue looking for peers declared in config
 			continue
 		}
 
@@ -121,12 +147,9 @@ func (p *State) Refresh() {
 		// TCP probing the gossip port is unreliable since providers may block TCP while
 		// allowing UDP, causing false negatives for healthy nodes.
 
-		// lastSeenActive
-		isActivePeer := node.Pubkey.String() == p.activePubkey
-
 		// a borked active peer might appear in gossip but not actually be voting
 		// so we need to check for that and only proceed to add it to the state if it is not voting still
-		if isActivePeer && !p.isNodeActiveAndVoting(*node) {
+		if isActiveNode && !p.isNodeActiveAndVoting(*node) {
 			p.logger.Warn("active peer appears in gossip but is not voting - excluding from state", "ip", nodeIP, "pubkey", node.Pubkey.String())
 			continue
 		}
@@ -139,7 +162,7 @@ func (p *State) Refresh() {
 			IP:                 nodeIP,
 			LastSeenAtUTC:      time.Now().UTC(),
 			Pubkey:             node.Pubkey.String(),
-			LastSeenActive:     isActivePeer,
+			LastSeenActive:     isActiveNode,
 			IsRecentlyInGossip: slices.Contains(p.missingGossipIPs, nodeIP),
 		}
 
@@ -326,6 +349,16 @@ func (p *State) PeerIPRankMap() map[string]int {
 // PeerCount returns the number of peers in the gossip state
 func (p *State) PeerCount() int {
 	return len(p.peerStatesByName)
+}
+
+// HasConfigUndeclaredActivePeer returns true if any of the peers are the active validator
+func (p *State) HasConfigUndeclaredActivePeer() bool {
+	return p.configUndeclaredActivePeer.IP != ""
+}
+
+// GetConfigUndeclaredActivePeer returns the config undeclared active peer
+func (p *State) GetConfigUndeclaredActivePeer() PeerState {
+	return p.configUndeclaredActivePeer
 }
 
 // getSortedIPs returns a an ascendings ordered list of IP addresses from the peerStatesByName map
@@ -515,13 +548,17 @@ func (p *State) peerNameFromIP(ip string) (string, bool) {
 	return "", false
 }
 
-func (p *State) hasConfigPeerWithIP(ip string) bool {
+func (p *State) isConfigDeclaredPeerWithIP(ip string) bool {
 	for _, peer := range p.configPeers {
 		if peer.IP == ip {
 			return true
 		}
 	}
 	return false
+}
+
+func (p *State) isNonConfigDeclaredPeerWithIP(ip string) bool {
+	return !p.isConfigDeclaredPeerWithIP(ip)
 }
 
 // IPEquals returns true if the IP is equal to the peer's IP

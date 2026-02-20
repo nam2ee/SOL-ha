@@ -1,6 +1,9 @@
 package gossip
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -586,4 +589,216 @@ func TestGetSortedIPs(t *testing.T) {
 	sortedIPs = state.getSortedIPs()
 	expected = []string{"10.0.0.1", "172.16.0.1", "192.168.1.1"}
 	assert.Equal(t, expected, sortedIPs, "IPs should be sorted lexicographically")
+}
+
+// ---- helpers for undeclared active peer tests ----
+
+const (
+	testActivePubkey = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+	testUndeclaredIP = "10.0.0.99"
+	testDeclaredIP   = "192.168.1.101"
+	testSelfIP       = "192.168.1.100"
+)
+
+// newGossipMockRPCServer creates a mock Solana JSON-RPC HTTP server for gossip state tests.
+// responses maps method names (e.g. "getClusterNodes") to their result values.
+func newGossipMockRPCServer(t *testing.T, responses map[string]interface{}) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+			ID     int    `json:"id"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+
+		w.Header().Set("Content-Type", "application/json")
+		result, ok := responses[req.Method]
+		if !ok {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"error":   map[string]interface{}{"code": -32601, "message": "Method not found"},
+				"id":      req.ID,
+			})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"result":  result,
+			"id":      req.ID,
+		})
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// gossipClusterNode returns a mock getClusterNodes entry for a node at the given IP.
+func gossipClusterNode(pubkey, ip string) map[string]interface{} {
+	return map[string]interface{}{
+		"pubkey":  pubkey,
+		"gossip":  ip + ":8001",
+		"tpu":     ip + ":8002",
+		"rpc":     ip + ":8003",
+		"version": "1.17.0",
+	}
+}
+
+// votingVoteAccountsResult returns a mock getVoteAccounts result with the given node pubkeys as current (voting).
+func votingVoteAccountsResult(currentNodePubkeys []string) map[string]interface{} {
+	current := []map[string]interface{}{}
+	for _, pk := range currentNodePubkeys {
+		current = append(current, map[string]interface{}{
+			"nodePubkey":       pk,
+			"votePubkey":       "11111111111111111111111111111111",
+			"activatedStake":   1000000,
+			"epochVoteAccount": true,
+			"epochCredits":     []interface{}{},
+			"commission":       0,
+			"lastVote":         100,
+			"rootSlot":         90,
+		})
+	}
+	return map[string]interface{}{
+		"current":    current,
+		"delinquent": []interface{}{},
+	}
+}
+
+// ---- tests for undeclared active peer detection ----
+
+func TestHasConfigUndeclaredActivePeer(t *testing.T) {
+	state := NewState(Options{
+		ClusterRPC:   rpc.NewClient("test", "https://api.mainnet-beta.solana.com"),
+		ActivePubkey: testActivePubkey,
+		SelfIP:       testSelfIP,
+		ConfigPeers:  config.Peers{},
+	})
+
+	t.Run("returns false when no undeclared active peer", func(t *testing.T) {
+		assert.False(t, state.HasConfigUndeclaredActivePeer())
+	})
+
+	t.Run("returns true and correct peer when set", func(t *testing.T) {
+		state.configUndeclaredActivePeer = PeerState{
+			Name:           "config-undeclared-active-peer",
+			IP:             testUndeclaredIP,
+			Pubkey:         testActivePubkey,
+			LastSeenAtUTC:  time.Now().UTC(),
+			LastSeenActive: true,
+		}
+		assert.True(t, state.HasConfigUndeclaredActivePeer())
+		peer := state.GetConfigUndeclaredActivePeer()
+		assert.Equal(t, testUndeclaredIP, peer.IP)
+		assert.Equal(t, testActivePubkey, peer.Pubkey)
+		assert.True(t, peer.LastSeenActive)
+	})
+}
+
+func TestRefresh_UndeclaredActivePeer_VotingBlocksFailover(t *testing.T) {
+	// Undeclared IP has the active pubkey and IS in current vote accounts (voting).
+	// Expected: configUndeclaredActivePeer is set, leaderless counter stays 0.
+	server := newGossipMockRPCServer(t, map[string]interface{}{
+		"getClusterNodes": []interface{}{
+			gossipClusterNode(testActivePubkey, testUndeclaredIP),
+		},
+		"getSlot":         100,
+		"getVoteAccounts": votingVoteAccountsResult([]string{testActivePubkey}),
+	})
+
+	state := NewState(Options{
+		ClusterRPC:   rpc.NewClient("test", server.URL),
+		ActivePubkey: testActivePubkey,
+		SelfIP:       testSelfIP,
+		ConfigPeers:  config.Peers{"peer1": {IP: testDeclaredIP, Name: "peer1"}},
+	})
+
+	state.Refresh()
+
+	require.True(t, state.HasConfigUndeclaredActivePeer(), "should detect undeclared voting active peer")
+	peer := state.GetConfigUndeclaredActivePeer()
+	assert.Equal(t, testUndeclaredIP, peer.IP)
+	assert.Equal(t, testActivePubkey, peer.Pubkey)
+	assert.True(t, peer.LastSeenActive)
+	assert.Equal(t, 0, state.LeaderlessSamplesCount, "leaderless counter must not increment when voting undeclared active peer is found")
+}
+
+func TestRefresh_UndeclaredActivePeer_NotVotingAllowsFailover(t *testing.T) {
+	// Undeclared IP has the active pubkey but is NOT in vote accounts (not voting).
+	// Expected: configUndeclaredActivePeer is NOT set, leaderless counter increments.
+	server := newGossipMockRPCServer(t, map[string]interface{}{
+		"getClusterNodes": []interface{}{
+			gossipClusterNode(testActivePubkey, testUndeclaredIP),
+		},
+		"getSlot":         100,
+		"getVoteAccounts": votingVoteAccountsResult([]string{}), // empty current - node not found
+	})
+
+	state := NewState(Options{
+		ClusterRPC:   rpc.NewClient("test", server.URL),
+		ActivePubkey: testActivePubkey,
+		SelfIP:       testSelfIP,
+		ConfigPeers:  config.Peers{"peer1": {IP: testDeclaredIP, Name: "peer1"}},
+	})
+
+	state.Refresh()
+
+	assert.False(t, state.HasConfigUndeclaredActivePeer(), "should NOT block failover when undeclared peer is not voting")
+	assert.Equal(t, 1, state.LeaderlessSamplesCount, "leaderless counter must increment to allow legitimate failover")
+}
+
+func TestRefresh_ConfigUndeclaredActivePeer_ResetOnEachRefresh(t *testing.T) {
+	// A refresh with no undeclared active peers must clear configUndeclaredActivePeer.
+	server := newGossipMockRPCServer(t, map[string]interface{}{
+		"getClusterNodes": []interface{}{}, // no nodes at all
+		"getSlot":         100,
+		"getVoteAccounts": votingVoteAccountsResult([]string{}),
+	})
+
+	state := NewState(Options{
+		ClusterRPC:   rpc.NewClient("test", server.URL),
+		ActivePubkey: testActivePubkey,
+		SelfIP:       testSelfIP,
+		ConfigPeers:  config.Peers{},
+	})
+
+	// Seed a stale value from a previous refresh.
+	state.configUndeclaredActivePeer = PeerState{
+		Name:           "config-undeclared-active-peer",
+		IP:             testUndeclaredIP,
+		Pubkey:         testActivePubkey,
+		LastSeenAtUTC:  time.Now().UTC(),
+		LastSeenActive: true,
+	}
+	require.True(t, state.HasConfigUndeclaredActivePeer())
+
+	state.Refresh()
+
+	assert.False(t, state.HasConfigUndeclaredActivePeer(), "configUndeclaredActivePeer must be reset on every Refresh()")
+}
+
+func TestRefresh_DeclaredActivePeer_NotRecordedAsUndeclared(t *testing.T) {
+	// Active pubkey at a DECLARED IP must go through normal peer tracking,
+	// not into configUndeclaredActivePeer.
+	server := newGossipMockRPCServer(t, map[string]interface{}{
+		"getClusterNodes": []interface{}{
+			gossipClusterNode(testActivePubkey, testDeclaredIP),
+		},
+		"getSlot":         100,
+		"getVoteAccounts": votingVoteAccountsResult([]string{testActivePubkey}),
+	})
+
+	state := NewState(Options{
+		ClusterRPC:   rpc.NewClient("test", server.URL),
+		ActivePubkey: testActivePubkey,
+		SelfIP:       testSelfIP,
+		ConfigPeers:  config.Peers{"peer1": {IP: testDeclaredIP, Name: "peer1"}},
+	})
+
+	state.Refresh()
+
+	assert.False(t, state.HasConfigUndeclaredActivePeer(), "declared active peer must not be recorded as undeclared")
+	assert.Equal(t, 0, state.LeaderlessSamplesCount, "leaderless counter must not increment for a healthy declared active peer")
+	activePeer, err := state.GetActivePeer()
+	require.NoError(t, err)
+	assert.Equal(t, testDeclaredIP, activePeer.IP)
+	assert.True(t, activePeer.LastSeenActive)
 }
