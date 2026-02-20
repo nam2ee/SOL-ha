@@ -300,6 +300,30 @@ failover:
   #   and thus triggering a failover. A node running on an identity with a delinquent vote account is not consiodered to be a leader.
   leaderless_samples_threshold: 3
 
+  # self_healthy
+  # description:
+  #   Configures how long the local validator must be continuously healthy before it is eligible
+  #   to become active in a failover. This guards against startup health flaps where a validator
+  #   briefly reports healthy during startup before falling behind and going unhealthy again.
+  self_healthy:
+
+    # minimum_duration
+    # required: false
+    # default: 45s
+    # description:
+    #   A Go duration string for how long the local validator RPC must continuously report healthy
+    #   before this node is eligible to become active in a failover.
+    minimum_duration: 45s
+
+    # poll_interval_duration
+    # required: false
+    # default: 5s
+    # description:
+    #   A Go duration string for how often to sample the local validator RPC health.
+    #   This runs independently of failover.poll_interval_duration so the healthy streak
+    #   timer is not skewed by gossip refresh latency.
+    poll_interval_duration: 5s
+
   # peers
   # required: true
   # min_length: 1 (at least one peer must be delcared, else we're not HA-ish)

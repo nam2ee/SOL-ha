@@ -6,6 +6,16 @@ import (
 	"time"
 )
 
+// SelfHealthy represents configuration for tracking the local validator's health streak
+type SelfHealthy struct {
+	// MinimumDuration is how long the local validator RPC must continuously report healthy
+	// before this node is eligible to become active in a failover
+	MinimumDuration time.Duration `koanf:"minimum_duration"`
+	// PollIntervalDuration is how often to sample the local validator RPC health,
+	// independent of the main failover poll_interval_duration
+	PollIntervalDuration time.Duration `koanf:"poll_interval_duration"`
+}
+
 // Failover represents failover decision parameters
 type Failover struct {
 	DryRun                         bool                           `koanf:"dry_run"`
@@ -16,6 +26,7 @@ type Failover struct {
 	Passive                        Role                           `koanf:"passive"`
 	Peers                          Peers                          `koanf:"peers"`
 	DelinquentSlotDistanceOverride DelinquentSlotDistanceOverride `koanf:"delinquent_slot_distance_override"`
+	SelfHealthy                    SelfHealthy                    `koanf:"self_healthy"`
 }
 
 // DelinquentSlotDistanceOverride represents an sdk override for the delinquent slot distance
@@ -33,6 +44,16 @@ func (f *Failover) Validate() error {
 	// failover.leaderless_samples_threshold must be greater than zero
 	if f.LeaderlessSamplesThreshold <= 0 {
 		return fmt.Errorf("failover.leaderless_samples_threshold must be positive and non-zero")
+	}
+
+	// failover.self_healthy.minimum_duration must be greater than zero
+	if f.SelfHealthy.MinimumDuration <= 0 {
+		return fmt.Errorf("failover.self_healthy.minimum_duration must be greater than zero")
+	}
+
+	// failover.self_healthy.poll_interval_duration must be greater than zero
+	if f.SelfHealthy.PollIntervalDuration <= 0 {
+		return fmt.Errorf("failover.self_healthy.poll_interval_duration must be greater than zero")
 	}
 
 	// failover.active.command must be defined
@@ -131,6 +152,12 @@ func (f *Failover) SetDefaults() {
 	}
 	if f.LeaderlessSamplesThreshold == 0 {
 		f.LeaderlessSamplesThreshold = 3 //  3 x poll interval = (at least) 15 seconds
+	}
+	if f.SelfHealthy.MinimumDuration == 0 {
+		f.SelfHealthy.MinimumDuration = 45 * time.Second
+	}
+	if f.SelfHealthy.PollIntervalDuration == 0 {
+		f.SelfHealthy.PollIntervalDuration = 5 * time.Second
 	}
 
 	// Set role names

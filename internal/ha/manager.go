@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -44,6 +45,11 @@ type Manager struct {
 	peerCount       int
 	initialized     bool
 	logPrefix       string
+	// selfHealthySince is the time the local validator first became healthy in the current
+	// continuous streak, as tracked by the independent health tracker goroutine.
+	// Zero value means the node is not currently in a healthy streak.
+	selfHealthySince time.Time
+	selfHealthyMutex    sync.RWMutex
 }
 
 // NewManager creates a new HA manager from options
@@ -88,6 +94,10 @@ func (m *Manager) Run() error {
 
 	// start metrics server
 	go m.startMetricsServer()
+
+	// start self health tracker goroutine - runs independently of the main HA monitor loop
+	// so that the healthy streak timer is not affected by gossip refresh latency
+	m.startHealthyTracker()
 
 	// start monitoring loop
 	return m.haMonitorLoop()
@@ -329,6 +339,15 @@ func (m *Manager) ensureHAState() {
 		return
 	}
 
+	// we must have been healthy for long enough to rule out startup health flaps
+	if !m.isSelfHealthyLongEnough() {
+		m.logger.Warn("not healthy for long enough to be a failover candidate - standing by",
+			"healthy_for", m.selfHealthyDuration(),
+			"minimum_duration", m.cfg.Failover.SelfHealthy.MinimumDuration,
+		)
+		return
+	}
+
 	// one last check to ensure we are NOT already active
 	if m.isSelfActive() {
 		m.logger.Warn("we are already active - nothing to do")
@@ -526,6 +545,71 @@ func (m *Manager) ensureActive() {
 	}
 
 	m.logger.Info("we are confirmed to be active", "active_pubkey", activePubkey)
+}
+
+// startHealthyTracker starts a goroutine that samples the local validator health on its own
+// independent interval. This decouples health streak tracking from the gossip poll loop,
+// ensuring the streak timer is not skewed by the latency of gossip RPC calls.
+func (m *Manager) startHealthyTracker() {
+	m.logger.Info("starting self health tracker",
+		"poll_interval", m.cfg.Failover.SelfHealthy.PollIntervalDuration,
+		"minimum_duration", m.cfg.Failover.SelfHealthy.MinimumDuration,
+	)
+	ticker := time.NewTicker(m.cfg.Failover.SelfHealthy.PollIntervalDuration)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-m.ctx.Done():
+				return
+			case <-ticker.C:
+				m.sampleSelfHealth()
+			}
+		}
+	}()
+}
+
+// sampleSelfHealth samples the local validator health and updates the continuous healthy streak.
+// Called by the health tracker goroutine on every tick.
+func (m *Manager) sampleSelfHealth() {
+	healthy := m.isSelfHealthy()
+	m.selfHealthyMutex.Lock()
+	defer m.selfHealthyMutex.Unlock()
+	if healthy {
+		if m.selfHealthySince.IsZero() {
+			m.selfHealthySince = time.Now()
+			m.logger.Debug("self health tracker: node is healthy", "healthy_since", m.selfHealthySince)
+		}
+	} else {
+		if !m.selfHealthySince.IsZero() {
+			m.logger.Debug("self health tracker: node became unhealthy - resetting healthy streak")
+		}
+		m.selfHealthySince = time.Time{}
+	}
+}
+
+// isSelfHealthyLongEnough returns true if the local validator has been continuously healthy
+// for at least failover.self_healthy.minimum_duration
+func (m *Manager) isSelfHealthyLongEnough() bool {
+	m.selfHealthyMutex.RLock()
+	since := m.selfHealthySince
+	m.selfHealthyMutex.RUnlock()
+	if since.IsZero() {
+		return false
+	}
+	return time.Since(since) >= m.cfg.Failover.SelfHealthy.MinimumDuration
+}
+
+// selfHealthyDuration returns how long the local validator has been continuously healthy.
+// Returns 0 if the node is not currently in a healthy streak.
+func (m *Manager) selfHealthyDuration() time.Duration {
+	m.selfHealthyMutex.RLock()
+	since := m.selfHealthySince
+	m.selfHealthyMutex.RUnlock()
+	if since.IsZero() {
+		return 0
+	}
+	return time.Since(since)
 }
 
 // isSelfHealthy checks if the validator is healthy by calling the local RPC client
