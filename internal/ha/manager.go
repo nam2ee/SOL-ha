@@ -246,6 +246,10 @@ func (m *Manager) haMonitorLoop() error {
 
 // checkForActivePeer checks for an active peer in the gossip state
 func (m *Manager) checkForActivePeer() {
+	if m.gossipState.HasConfigUndeclaredActivePeer() {
+		return
+	}
+
 	if m.gossipState.LeaderlessSamplesExceedsThreshold(m.cfg.Failover.LeaderlessSamplesThreshold) {
 		m.logger.Warn(fmt.Sprintf("leaderless samples exceeds threshold %d > %d",
 			m.gossipState.LeaderlessSamplesCount, m.cfg.Failover.LeaderlessSamplesThreshold))
@@ -275,6 +279,14 @@ func (m *Manager) ensureHAState() {
 
 	// refresh metrics
 	m.refreshMetrics()
+
+	// do nothing except warn if a config-undeclared active peer is found, this prevents false positive failovers
+	// and prompts users to declare these so that the anti-race condition logic (based on IPs) can continue to work as intended
+	if m.gossipState.HasConfigUndeclaredActivePeer() {
+		configUndeclaredActivePeer := m.gossipState.GetConfigUndeclaredActivePeer()
+		m.logger.Warn("active peer found not declared in HA cluster config - no failover required, but should be added to failover.peers", "ip", configUndeclaredActivePeer.IP, "pubkey", configUndeclaredActivePeer.Pubkey)
+		return
+	}
 
 	// if there is an active peer found in the last failover.leaderless_samples_threshold - we are good
 	// having a lookback grace period is important to allow for RPC glitches and other issues
@@ -336,6 +348,13 @@ func (m *Manager) ensureHAState() {
 	// refresh the peers state to ensure no one else has taken over already - this will reset the leaderless samples count
 	// if a new leader is found
 	m.gossipState.Refresh()
+
+	// an undeclared active peer may have appeared during the delay - treat the same as the pre-delay check
+	if m.gossipState.HasConfigUndeclaredActivePeer() {
+		configUndeclaredActivePeer := m.gossipState.GetConfigUndeclaredActivePeer()
+		m.logger.Warn("active peer found not declared in HA cluster config (post-delay re-check) - aborting takeover, should be added to failover.peers", "ip", configUndeclaredActivePeer.IP, "pubkey", configUndeclaredActivePeer.Pubkey)
+		return
+	}
 
 	// if someone has already taken over as active - say so
 	// TODO: refactor logic, it works but the situation is a little confusing
