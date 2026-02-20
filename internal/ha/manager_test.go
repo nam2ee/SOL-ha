@@ -58,6 +58,10 @@ func createTestConfig() *config.Config {
 					Post: []config.Hook{{Command: "echo 'post-passive'"}},
 				},
 			},
+			SelfHealthy: config.SelfHealthy{
+				MinimumDuration:      45 * time.Second,
+				PollIntervalDuration: 5 * time.Second,
+			},
 		},
 		Prometheus: config.Prometheus{
 			Port: 9090,

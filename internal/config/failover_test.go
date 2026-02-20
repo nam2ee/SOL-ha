@@ -16,6 +16,8 @@ func TestFailover_SetDefaults(t *testing.T) {
 	assert.Equal(t, 3, failover.LeaderlessSamplesThreshold)
 	// TakeoverJitterDuration is no longer set by default - it remains at zero value
 	assert.Equal(t, time.Duration(0), failover.TakeoverJitterDuration)
+	assert.Equal(t, 45*time.Second, failover.SelfHealthy.MinimumDuration)
+	assert.Equal(t, 5*time.Second, failover.SelfHealthy.PollIntervalDuration)
 }
 
 func TestFailover_Validate(t *testing.T) {
@@ -25,6 +27,10 @@ func TestFailover_Validate(t *testing.T) {
 		PollIntervalDuration:       30 * time.Second,
 		LeaderlessSamplesThreshold: 10,
 		TakeoverJitterDuration:     10 * time.Second,
+		SelfHealthy: SelfHealthy{
+			MinimumDuration:      45 * time.Second,
+			PollIntervalDuration: 5 * time.Second,
+		},
 		Active: Role{
 			Command: "systemctl start solana",
 		},
@@ -53,8 +59,22 @@ func TestFailover_Validate(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failover.leaderless_samples_threshold must be positive and non-zero")
 
-	// Test with empty active command
+	// Test with zero self_healthy minimum_duration
 	failover.LeaderlessSamplesThreshold = 10
+	failover.SelfHealthy.MinimumDuration = 0
+	err = failover.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failover.self_healthy.minimum_duration must be greater than zero")
+
+	// Test with zero self_healthy poll_interval_duration
+	failover.SelfHealthy.MinimumDuration = 45 * time.Second
+	failover.SelfHealthy.PollIntervalDuration = 0
+	err = failover.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failover.self_healthy.poll_interval_duration must be greater than zero")
+
+	// Test with empty active command
+	failover.SelfHealthy.PollIntervalDuration = 5 * time.Second
 	failover.Active.Command = ""
 	err = failover.Validate()
 	assert.Error(t, err)
@@ -126,6 +146,10 @@ func TestFailover_ValidateWithHooks(t *testing.T) {
 		PollIntervalDuration:       30 * time.Second,
 		LeaderlessSamplesThreshold: 10,
 		TakeoverJitterDuration:     10 * time.Second,
+		SelfHealthy: SelfHealthy{
+			MinimumDuration:      45 * time.Second,
+			PollIntervalDuration: 5 * time.Second,
+		},
 		Active: Role{
 			Command: "systemctl start solana",
 			Hooks: Hooks{
