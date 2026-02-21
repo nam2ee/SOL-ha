@@ -1,0 +1,20 @@
+name: stable-operation
+description: >
+  With a healthy active validator present, no failover should occur.
+  All validators should maintain their assigned roles for the duration of the check.
+
+initial_state:
+  active_validator: validator-1
+
+steps:
+  - name: assert stable roles
+    action: assert
+    timeout: 30s
+    state:
+      validator-1:
+        role: active
+      validator-2:
+        role: passive
+      validator-3:
+        role: passive
+    active_count: 1

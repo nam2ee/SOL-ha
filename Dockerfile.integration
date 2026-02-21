@@ -22,7 +22,7 @@ RUN GOOS=linux GOARCH=amd64 go build -mod=mod -o bin/solana-validator-ha ./cmd/s
 FROM alpine:latest
 
 # Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata curl
 
 # Create app user
 RUN addgroup -g 1001 -S appgroup && \

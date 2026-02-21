@@ -1,0 +1,45 @@
+name: active-disconnects
+description: >
+  The active validator disconnects. One of the passive validators detects the
+  leaderless cluster and takes over as active. After the original reconnects,
+  it recognises the new leader and stays passive — no second failover.
+
+initial_state:
+  active_validator: validator-1
+
+steps:
+  - name: assert initial state
+    action: assert
+    timeout: 30s
+    state:
+      validator-1:
+        role: active
+      validator-2:
+        role: passive
+      validator-3:
+        role: passive
+    active_count: 1
+
+  - name: disconnect active validator
+    action: disconnect
+    target: validator-1
+
+  - name: a passive takes over as active
+    action: assert
+    timeout: 45s
+    active_count: 1
+    state:
+      validator-1:
+        role: passive  # disconnected; its HA manager calls ensurePassive
+
+  - name: reconnect original validator
+    action: reconnect
+    target: validator-1
+
+  - name: reconnected validator stays passive (no second failover)
+    action: assert
+    timeout: 20s
+    active_count: 1
+    state:
+      validator-1:
+        role: passive
