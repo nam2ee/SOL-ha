@@ -65,7 +65,7 @@ type Options struct {
 // NewState creates a new gossip state
 func NewState(opts Options) *State {
 	return &State{
-		logger:                         log.WithPrefix(fmt.Sprintf("[%s gossip_state]", opts.LogPrefix)),
+		logger:                         log.WithPrefix("[gossip_state]"),
 		clusterRPC:                     opts.ClusterRPC,
 		activePubkey:                   opts.ActivePubkey,
 		selfIP:                         opts.SelfIP,
@@ -268,8 +268,8 @@ func (p *State) Refresh() {
 }
 
 // peersStateString returns a string representation of all configured peers for logging
-// format: discovered N/<total_configured_peers> configured peers: [<emoji> <active|passive|missing> <peer_name> <peer_ip> rank=<peer_ip_rank>/<total_ip_ranks> last_seen_at=<peer_last_seen_at_utc_with_nanoseconds>] ...
-// where emoji is 🟢 for active, 🟡 for passive, and 🔴 for missing
+// format: discovered N/<total_configured_peers> configured peers: [<emoji> <ACTIVE|PASSIVE|MISSING> <peer_name> <peer_ip> rank=<peer_ip_rank>/<total_ip_ranks> last_seen_at=<peer_last_seen_at_utc_with_nanoseconds>] ...
+// where emoji is 🟢 for ACTIVE, 🟡 for PASSIVE, and 🔴 for MISSING
 // displayed in ascending order of ip rank
 func (p *State) peersStateString() string {
 	if len(p.configPeers) == 0 {
@@ -319,14 +319,14 @@ func (p *State) peersStateString() string {
 		if peer.discovered {
 			if peer.active {
 				emoji = "🟢"
-				status = "active"
+				status = "ACTIVE"
 			} else {
 				emoji = "🟡"
-				status = "passive"
+				status = "PASSIVE"
 			}
 		} else {
 			emoji = "🔴"
-			status = "missing"
+			status = "MISSING"
 		}
 
 		sb.WriteByte(' ')

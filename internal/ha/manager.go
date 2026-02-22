@@ -70,7 +70,7 @@ func NewManager(opts NewManagerOptions) *Manager {
 		cfg:       opts.Cfg,
 		metrics:   metrics,
 		cache:     cache,
-		logger:    log.WithPrefix(fmt.Sprintf("[%s ha_manager]", opts.Cfg.Validator.Name)),
+		logger:    log.WithPrefix("[ha_manager]"),
 		localRPC:  rpc.NewClient(opts.Cfg.Validator.Name, opts.Cfg.Validator.RPCURL),
 		ctx:       ctx,
 		cancel:    cancel,
@@ -121,7 +121,7 @@ func (m *Manager) initialize() error {
 
 	// set global log prefix to pass everywhere
 	m.logPrefix = m.cfg.Validator.Name
-	m.logger = log.WithPrefix(fmt.Sprintf("[%s ha_manager]", m.logPrefix))
+	m.logger = log.WithPrefix("[ha_manager]")
 
 	// peers config file must not declare ourselves
 	if m.cfg.Failover.Peers.HasIP(publicIP) {
