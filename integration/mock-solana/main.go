@@ -12,9 +12,9 @@ import (
 )
 
 const (
-	activePubkey    = "ArkzFExXXHaA6izkNhTJJ5zpXdQpynffjfRMJu4Yq6H"
-	activeVotePubkey = "Vote111111111111111111111111111111111111111111"
-	currentSlot     = uint64(1000)
+	activePubkey     = "ArkzFExXXHaA6izkNhTJJ5zpXdQpynffjfRMJu4Yq6H"
+	activeVotePubkey = "ArkzFExXXHaA6izkNhTJJ5zpXdQpynffjfRMJu4Yq6H"
+	currentSlot      = uint64(1000)
 )
 
 // validatorMeta holds the fixed metadata for each known validator in the test network.

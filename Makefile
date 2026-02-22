@@ -85,6 +85,24 @@ integration-test:
 	cd integration && ./run-tests.sh
 	@echo "Integration tests completed!"
 
+# Generate README demo GIFs using VHS (https://github.com/charmbracelet/vhs)
+# Requires vhs: go install github.com/charmbracelet/vhs@latest
+# Produces: docs/passive-node.gif  docs/active-node.gif
+.PHONY: gif
+gif:
+	@echo "Starting integration environment..."
+	@(cd integration && docker compose up --build -d 2>&1 | grep -E 'Started|Built|error' || true)
+	@echo "Waiting 30 s for services to be ready..."
+	@sleep 30
+	@mkdir -p docs
+	@echo "Recording passive-node GIF..."
+	@vhs integration/tapes/passive-node.tape
+	@echo "Recording active-node GIF..."
+	@vhs integration/tapes/active-node.tape
+	@echo "GIFs saved: docs/passive-node.gif  docs/active-node.gif"
+	@-(cd integration && docker compose down --volumes --remove-orphans 2>/dev/null)
+
+
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
@@ -171,6 +189,7 @@ help:
 	@echo "  test           - Run tests"
 	@echo "  test-coverage  - Run tests with coverage"
 	@echo "  integration-test - Run integration tests"
+	@echo "  gif              - Generate README demo GIFs (requires vhs)"
 	@echo "  deps           - Install dependencies"
 	@echo "  fmt            - Format code"
 	@echo "  lint           - Run linter"

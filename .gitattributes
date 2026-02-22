@@ -1,0 +1,2 @@
+# Mark generated docs assets as binary so git doesn't try to diff them.
+docs/*.gif binary linguist-generated=true
