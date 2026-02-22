@@ -1,4 +1,3 @@
-# Validator 3 Configuration
 validator:
   name: "validator-3"
   rpc_url: "http://mock-solana:8899?validator=validator-3"
@@ -9,7 +8,7 @@ validator:
 
 cluster:
   name: "mainnet-beta"
-  rpc_urls: ["http://mock-solana:8899"]
+  rpc_urls: ["http://mock-cluster:8899"]
 
 prometheus:
   port: 9090
@@ -18,47 +17,39 @@ prometheus:
     validator: "validator-3"
 
 failover:
-  dry_run: true  # Test mode - don't execute actual commands
   poll_interval_duration: "3s"
-  leaderless_threshold_duration: "9s"
-  takeover_jitter_duration: "3s"
+  leaderless_samples_threshold: 3
+
+  self_healthy:
+    minimum_duration: "5s"
+    poll_interval_duration: "2s"
 
   active:
-    command: "echo"
+    command: "curl"
     args:
-      - "ACTIVE: validator-3 is now active"
-    hooks:
-      pre:
-        - name: "pre-active"
-          command: "echo"
-          args: ["Pre-active hook for validator-3"]
-          must_succeed: false
-      post:
-        - name: "post-active"
-          command: "echo"
-          args: ["Post-active hook for validator-3"]
-          must_succeed: false
+      - "-sf"
+      - "-X"
+      - "POST"
+      - "-H"
+      - "Content-Type: application/json"
+      - "-d"
+      - '{"action":"set_active","target":"{{ .SelfName }}"}'
+      - "http://mock-solana:8899/action"
 
   passive:
-    command: "echo"
+    command: "curl"
     args:
-      - "PASSIVE: validator-3 is now passive"
-    hooks:
-      pre:
-        - name: "pre-passive"
-          command: "echo"
-          args: ["Pre-passive hook for validator-3"]
-          must_succeed: false
-      post:
-        - name: "post-passive"
-          command: "echo"
-          args: ["Post-passive hook for validator-3"]
-          must_succeed: false
+      - "-sf"
+      - "-X"
+      - "POST"
+      - "-H"
+      - "Content-Type: application/json"
+      - "-d"
+      - '{"action":"set_passive","target":"{{ .SelfName }}"}'
+      - "http://mock-solana:8899/action"
 
   peers:
     validator-1:
-      ip: "192.168.1.100"
+      ip: "10.0.0.100"
     validator-2:
-      ip: "192.168.1.101"
-    validator-3:
-      ip: "192.168.1.102"
+      ip: "10.0.0.101"

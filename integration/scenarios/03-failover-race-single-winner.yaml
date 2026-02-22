@@ -1,0 +1,27 @@
+name: failover-race-single-winner
+description: >
+  When the active validator disconnects and multiple passive validators are
+  eligible, exactly one should become active. The IP-rank delay mechanism
+  prevents split-brain: the highest-ranked peer takes over first; by the time
+  the others check again a leader is already present and they stand down.
+
+initial_state:
+  active_validator: validator-1
+
+steps:
+  - name: assert initial state
+    action: assert
+    timeout: 30s
+    active_count: 1
+    state:
+      validator-1:
+        role: active
+
+  - name: disconnect active validator
+    action: disconnect
+    target: validator-1
+
+  - name: exactly one passive becomes active (no split-brain)
+    action: assert
+    timeout: 45s
+    active_count: 1

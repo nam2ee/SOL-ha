@@ -2,19 +2,19 @@
 
 A gossip-based high availability (HA) manager for Solana validators. This tool helps automate *unexpected* failovers due to `<insert one of endless reasons>`. To automate *planned* failovers, see [solana-validator-failover](https://github.com/SOL-Strategies/solana-validator-failover)
 
-![solana-validator-ha](demo/e2e/preview.png)
-
 ## Demo
 
-Automatic failover resulting from loss of `active (voting)` leader.
+`validator-1` (active) loses network connectivity. A passive peer detects the leaderless cluster and takes over — automatically, in ~12 seconds.
 
-**`primary (active)`** disconnects and is ensured to be `passive`
+Passive node (`validator-2`) monitoring the cluster and promoting itself to active:
 
-![primary-lost](demo/e2e/primary.gif)
+![passive node takeover](docs/passive-node.gif)
 
-**`backup (passive)`** detects loss of leader and becomes `active`
+Active node (`validator-1`) detecting it has dropped from gossip and stepping down:
 
-![backup-active](demo/e2e/backup.gif)
+![active node handover](docs/active-node.gif)
+
+> GIFs auto-generated on every merge to master via [VHS](https://github.com/charmbracelet/vhs) + the integration test harness.
 
 ## How it works
 

@@ -9,45 +9,43 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/gagliardetto/solana-go"
 )
 
+const (
+	activePubkey     = "ArkzFExXXHaA6izkNhTJJ5zpXdQpynffjfRMJu4Yq6H"
+	activeVotePubkey = "ArkzFExXXHaA6izkNhTJJ5zpXdQpynffjfRMJu4Yq6H"
+	currentSlot      = uint64(1000)
+)
+
+// validatorMeta holds the fixed metadata for each known validator in the test network.
+var validatorMeta = map[string]struct {
+	dockerIP      string
+	publicIP      string
+	passivePubkey string
+}{
+	"validator-1": {"172.20.0.10", "10.0.0.100", "AP4JyZq2vuN4u64FGFHTwdG11xHu1vZWVYQj21MPLrnw"},
+	"validator-2": {"172.20.0.11", "10.0.0.101", "DJ7w4p8Ve7qdSAmkpA3sviSbsd1HPUxd43x7MTH72JHT"},
+	"validator-3": {"172.20.0.12", "10.0.0.102", "5dXttfrjFEEExmZhVmVAdw2LzepNAhFYJTUgPCDk8CYD"},
+}
+
+// MockSolanaServer simulates a Solana RPC node and exposes a control API for test scenarios.
 type MockSolanaServer struct {
-	activeValidator  string
-	validators       map[string]string
-	disconnected     map[string]bool
 	mu               sync.RWMutex
-	callingValidator string // Added to track which validator is calling the RPC endpoint
+	activeValidator  string          // which validator currently holds the active identity
+	disconnected     map[string]bool // validators removed from gossip
+	unhealthy        map[string]bool // validators whose local health check returns unhealthy
+	callingValidator string          // populated from ?validator= query param per request
 }
 
-type RPCRequest struct {
-	JSONRPC string        `json:"jsonrpc"`
-	ID      interface{}   `json:"id"`
-	Method  string        `json:"method"`
-	Params  []interface{} `json:"params"`
+func NewMockSolanaServer() *MockSolanaServer {
+	return &MockSolanaServer{
+		activeValidator: os.Getenv("ACTIVE_VALIDATOR"),
+		disconnected:    make(map[string]bool),
+		unhealthy:       make(map[string]bool),
+	}
 }
 
-type RPCResponse struct {
-	JSONRPC string      `json:"jsonrpc"`
-	ID      interface{} `json:"id"`
-	Result  interface{} `json:"result,omitempty"`
-	Error   *RPCError   `json:"error,omitempty"`
-}
-
-type RPCError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-type MockSolanaControl struct {
-	ActiveValidator string `json:"active_validator"`
-}
-
-type NetworkControl struct {
-	DisconnectValidator string `json:"disconnect_validator"`
-	ReconnectValidator  string `json:"reconnect_validator"`
-}
+// ── RPC types ────────────────────────────────────────────────────────────────
 
 type ClusterNode struct {
 	Pubkey       string `json:"pubkey"`
@@ -59,283 +57,351 @@ type ClusterNode struct {
 	ShredVersion int    `json:"shredVersion"`
 }
 
-type BlockInfo struct {
-	Blockhash    string        `json:"blockhash"`
-	ParentSlot   int64         `json:"parentSlot"`
-	Transactions []interface{} `json:"transactions"`
-	Rewards      []interface{} `json:"rewards"`
-	BlockTime    int64         `json:"blockTime"`
-	BlockHeight  int64         `json:"blockHeight"`
+type VoteAccount struct {
+	VotePubkey       string     `json:"votePubkey"`
+	NodePubkey       string     `json:"nodePubkey"`
+	ActivatedStake   uint64     `json:"activatedStake"`
+	EpochVoteAccount bool       `json:"epochVoteAccount"`
+	Commission       uint8      `json:"commission"`
+	LastVote         uint64     `json:"lastVote"`
+	EpochCredits     [][]uint64 `json:"epochCredits"`
+	RootSlot         uint64     `json:"rootSlot"`
 }
 
-func NewMockSolanaServer() *MockSolanaServer {
-	return &MockSolanaServer{
-		activeValidator: os.Getenv("ACTIVE_VALIDATOR"),
-		validators: map[string]string{
-			"validator-1": os.Getenv("VALIDATOR_1_IP"),
-			"validator-2": os.Getenv("VALIDATOR_2_IP"),
-			"validator-3": os.Getenv("VALIDATOR_3_IP"),
-		},
-		disconnected: make(map[string]bool),
-	}
+type VoteAccountsResult struct {
+	Current   []VoteAccount `json:"current"`
+	Delinquent []VoteAccount `json:"delinquent"`
 }
+
+type BalanceResult struct {
+	Context struct {
+		Slot uint64 `json:"slot"`
+	} `json:"context"`
+	Value uint64 `json:"value"`
+}
+
+// ── Control types ─────────────────────────────────────────────────────────────
+
+// ControlAction is the unified control request accepted by the /action endpoint.
+// Actions: set_active, set_passive, disconnect, reconnect, set_unhealthy, set_healthy, reset.
+type ControlAction struct {
+	Action string `json:"action"`
+	Target string `json:"target"` // validator name; empty for reset/set_active with no target
+}
+
+// ── HTTP handlers ─────────────────────────────────────────────────────────────
 
 func (s *MockSolanaServer) handleRPC(w http.ResponseWriter, r *http.Request) {
-	// Parse the request body
-	var request map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+	var req map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	method, ok := request["method"].(string)
-	if !ok {
-		http.Error(w, "Missing method", http.StatusBadRequest)
-		return
-	}
+	method, _ := req["method"].(string)
 
-	// Track which validator is calling based on query parameter
-	validatorName := r.URL.Query().Get("validator")
-	if validatorName != "" {
+	// Track which validator is making the call via ?validator= query param.
+	// Used for per-validator responses (getIdentity, getHealth).
+	if v := r.URL.Query().Get("validator"); v != "" {
 		s.mu.Lock()
-		s.callingValidator = validatorName
+		s.callingValidator = v
 		s.mu.Unlock()
 	}
 
-	var response interface{}
+	var result any
 	switch method {
 	case "getClusterNodes":
-		response = s.getClusterNodes()
+		result = s.getClusterNodes()
 	case "getIdentity":
-		response = s.getIdentity()
+		result = s.getIdentity()
 	case "getHealth":
-		response = s.getHealth()
+		result = s.getHealth()
+	case "getSlot":
+		result = currentSlot
+	case "getVoteAccounts":
+		result = s.getVoteAccounts()
+	case "getBalance":
+		result = s.getBalance()
 	default:
-		response = map[string]interface{}{
-			"error": map[string]interface{}{
+		result = map[string]any{
+			"error": map[string]any{
 				"code":    -32601,
-				"message": "Method not found",
+				"message": fmt.Sprintf("method not found: %s", method),
 			},
 		}
 	}
 
-	// Create the JSON-RPC response
-	jsonResponse := map[string]interface{}{
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
 		"jsonrpc": "2.0",
-		"id":      request["id"],
-		"result":  response,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(jsonResponse)
+		"id":      req["id"],
+		"result":  result,
+	})
 }
 
-func (s *MockSolanaServer) handleControl(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+// handleAction is the unified control endpoint used by test scenarios and validator commands.
+func (s *MockSolanaServer) handleAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	var control MockSolanaControl
-	if err := json.NewDecoder(r.Body).Decode(&control); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+	var action ControlAction
+	if err := json.NewDecoder(r.Body).Decode(&action); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	s.SetActiveValidator(control.ActiveValidator)
+	s.mu.Lock()
+	switch action.Action {
+	case "set_active":
+		s.activeValidator = action.Target
+		log.Printf("[control] set_active: %q", action.Target)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
+	case "set_passive":
+		// Only clear the active validator if this specific validator is currently active.
+		// Idempotent: if it was already passive, this is a no-op.
+		if s.activeValidator == action.Target {
+			s.activeValidator = ""
+			log.Printf("[control] set_passive: %q (was active, cleared)", action.Target)
+		} else {
+			log.Printf("[control] set_passive: %q (already passive, no-op)", action.Target)
+		}
 
-func (s *MockSolanaServer) handleNetwork(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+	case "disconnect":
+		s.disconnected[action.Target] = true
+		// If the disconnected validator was active, clear the active slot —
+		// simulating the reality that an offline node is no longer serving blocks.
+		if s.activeValidator == action.Target {
+			s.activeValidator = ""
+			log.Printf("[control] disconnect: %q (was active, cleared)", action.Target)
+		} else {
+			log.Printf("[control] disconnect: %q", action.Target)
+		}
 
-	var control NetworkControl
-	if err := json.NewDecoder(r.Body).Decode(&control); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
-		return
-	}
+	case "reconnect":
+		delete(s.disconnected, action.Target)
+		log.Printf("[control] reconnect: %q", action.Target)
 
-	if control.DisconnectValidator != "" {
-		s.DisconnectValidator(control.DisconnectValidator)
-	} else if control.ReconnectValidator != "" {
-		s.ReconnectValidator(control.ReconnectValidator)
-	}
+	case "set_unhealthy":
+		s.unhealthy[action.Target] = true
+		log.Printf("[control] set_unhealthy: %q", action.Target)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
+	case "set_healthy":
+		delete(s.unhealthy, action.Target)
+		log.Printf("[control] set_healthy: %q", action.Target)
 
-func (s *MockSolanaServer) handlePublicIP(w http.ResponseWriter, r *http.Request) {
-	// Get the client's IP address
-	clientIP := r.RemoteAddr
-	if forwardedFor := r.Header.Get("X-Forwarded-For"); forwardedFor != "" {
-		clientIP = forwardedFor
-	}
+	case "reset":
+		// Reconnect all validators, clear all unhealthy state, set initial active.
+		s.disconnected = make(map[string]bool)
+		s.unhealthy = make(map[string]bool)
+		s.activeValidator = action.Target
+		log.Printf("[control] reset: active=%q", action.Target)
 
-	// Remove port if present
-	if colonIndex := strings.Index(clientIP, ":"); colonIndex != -1 {
-		clientIP = clientIP[:colonIndex]
-	}
-
-	// Map the client IP to a different public IP for testing
-	// This prevents the "must not reference ourselves" validation error
-	// Return IPs that are NOT in the peers configuration
-	var validatorIP string
-	switch clientIP {
-	case "172.20.0.10":
-		validatorIP = "10.0.0.100" // Different from peers configuration
-	case "172.20.0.11":
-		validatorIP = "10.0.0.101" // Different from peers configuration
-	case "172.20.0.12":
-		validatorIP = "10.0.0.102" // Different from peers configuration
 	default:
-		// Fallback to a different IP
-		validatorIP = "10.0.0.103"
+		s.mu.Unlock()
+		http.Error(w, fmt.Sprintf("unknown action: %s", action.Action), http.StatusBadRequest)
+		return
 	}
+	s.mu.Unlock()
 
-	w.Header().Set("Content-Type", "text/plain")
-	w.Write([]byte(validatorIP))
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
+// handlePublicIP returns a stable public IP for each validator based on their Docker network IP.
+// This lets HA managers discover their own public IP during initialisation.
+func (s *MockSolanaServer) handlePublicIP(w http.ResponseWriter, r *http.Request) {
+	clientIP := r.RemoteAddr
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		clientIP = fwd
+	}
+	if i := strings.LastIndex(clientIP, ":"); i != -1 {
+		clientIP = clientIP[:i]
+	}
+
+	for _, meta := range validatorMeta {
+		if meta.dockerIP == clientIP {
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte(meta.publicIP))
+			return
+		}
+	}
+
+	// Fallback for unknown callers (e.g. the orchestrator running health checks)
+	w.Header().Set("Content-Type", "text/plain")
+	w.Write([]byte("10.0.0.199"))
+}
+
+// ── RPC method implementations ────────────────────────────────────────────────
+
+// getClusterNodes returns gossip entries for all connected validators.
+// Gossip addresses use public IPs so that the HA manager's peer-IP matching works correctly.
 func (s *MockSolanaServer) getClusterNodes() []ClusterNode {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var nodes []ClusterNode
-	for name, ip := range s.validators {
-		// Skip disconnected validators
+	for name, meta := range validatorMeta {
 		if s.disconnected[name] {
 			continue
 		}
 
-		// Use the actual active pubkey for the active validator
-		var pubkey string
+		pubkey := meta.passivePubkey
 		if name == s.activeValidator {
-			pubkey = "ArkzFExXXHaA6izkNhTJJ5zpXdQpynffjfRMJu4Yq6H"
-		} else {
-			// Use valid Solana public keys for passive validators
-			switch name {
-			case "validator-2":
-				pubkey = "AP4JyZq2vuN4u64FGFHTwdG11xHu1vZWVYQj21MPLrnw"
-			case "validator-3":
-				pubkey = "DJ7w4p8Ve7qdSAmkpA3sviSbsd1HPUxd43x7MTH72JHT"
-			default:
-				pubkey = "11111111111111111111111111111111"
-			}
+			pubkey = activePubkey
 		}
 
-		node := ClusterNode{
+		nodes = append(nodes, ClusterNode{
 			Pubkey:       pubkey,
-			Gossip:       fmt.Sprintf("%s:8001", ip),
-			TPU:          fmt.Sprintf("%s:8003", ip),
-			RPC:          fmt.Sprintf("%s:8899", ip),
-			Version:      "1.17.0",
+			Gossip:       fmt.Sprintf("%s:8001", meta.publicIP),
+			TPU:          fmt.Sprintf("%s:8003", meta.publicIP),
+			RPC:          fmt.Sprintf("%s:8899", meta.publicIP),
+			Version:      "2.0.0",
 			FeatureSet:   123456789,
 			ShredVersion: 12345,
-		}
-		nodes = append(nodes, node)
+		})
 	}
 	return nodes
 }
 
-func (s *MockSolanaServer) getBlocks() []int64 {
-	return []int64{1000, 1001, 1002, 1003, 1004}
-}
-
-func (s *MockSolanaServer) getBlock() *BlockInfo {
-	return &BlockInfo{
-		Blockhash:    solana.NewWallet().PublicKey().String(),
-		ParentSlot:   999,
-		Transactions: []interface{}{},
-		Rewards:      []interface{}{},
-		BlockTime:    time.Now().Unix(),
-		BlockHeight:  1000,
-	}
-}
-
-func (s *MockSolanaServer) getSlot() int64 {
-	return 1000
-}
-
-func (s *MockSolanaServer) getIdentity() map[string]interface{} {
+// getIdentity returns the identity pubkey for the calling validator.
+// The ?validator= query param identifies the caller.
+func (s *MockSolanaServer) getIdentity() map[string]any {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// Return the appropriate identity based on which validator is calling
-	// Only the active validator should return the active pubkey
-	if s.callingValidator == s.activeValidator {
-		// This validator is the active one, return active pubkey
-		return map[string]interface{}{
-			"identity": "ArkzFExXXHaA6izkNhTJJ5zpXdQpynffjfRMJu4Yq6H",
-		}
-	} else {
-		// This validator is passive, return passive pubkey
-		// Use different passive pubkeys for different validators
-		switch s.callingValidator {
-		case "validator-1":
-			return map[string]interface{}{
-				"identity": "AP4JyZq2vuN4u64FGFHTwdG11xHu1vZWVYQj21MPLrnw",
-			}
-		case "validator-2":
-			return map[string]interface{}{
-				"identity": "DJ7w4p8Ve7qdSAmkpA3sviSbsd1HPUxd43x7MTH72JHT",
-			}
-		case "validator-3":
-			return map[string]interface{}{
-				"identity": "5dXttfrjFEEExmZhVmVAdw2LzepNAhFYJTUgPCDk8CYD",
-			}
-		default:
-			// Fallback - return passive pubkey
-			return map[string]interface{}{
-				"identity": "AP4JyZq2vuN4u64FGFHTwdG11xHu1vZWVYQj21MPLrnw",
-			}
-		}
+	if s.callingValidator == s.activeValidator && s.activeValidator != "" {
+		return map[string]any{"identity": activePubkey}
 	}
+
+	// Return the passive pubkey for this validator
+	if meta, ok := validatorMeta[s.callingValidator]; ok {
+		return map[string]any{"identity": meta.passivePubkey}
+	}
+
+	// Fallback
+	return map[string]any{"identity": validatorMeta["validator-1"].passivePubkey}
 }
 
+// getHealth returns "ok" unless the calling validator has been marked unhealthy.
 func (s *MockSolanaServer) getHealth() string {
-	// Return a healthy status for all validators
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.unhealthy[s.callingValidator] {
+		return "behind"
+	}
 	return "ok"
 }
 
-func (s *MockSolanaServer) SetActiveValidator(validator string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.activeValidator = validator
-	log.Printf("Active validator changed to: %s", validator)
+// getVoteAccounts returns the active validator's pubkey in Current[].
+// This confirms to the HA manager that the active node is genuinely voting.
+func (s *MockSolanaServer) getVoteAccounts() VoteAccountsResult {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.activeValidator == "" || s.disconnected[s.activeValidator] {
+		return VoteAccountsResult{
+			Current:   []VoteAccount{},
+			Delinquent: []VoteAccount{},
+		}
+	}
+
+	return VoteAccountsResult{
+		Current: []VoteAccount{
+			{
+				VotePubkey:       activeVotePubkey,
+				NodePubkey:       activePubkey,
+				ActivatedStake:   1_000_000_000,
+				EpochVoteAccount: true,
+				Commission:       0,
+				LastVote:         currentSlot - 2, // recent vote, well within delinquency threshold
+				EpochCredits:     [][]uint64{},
+				RootSlot:         currentSlot - 32,
+			},
+		},
+		Delinquent: []VoteAccount{},
+	}
 }
 
-func (s *MockSolanaServer) DisconnectValidator(validator string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.disconnected[validator] = true
-	log.Printf("Validator disconnected: %s", validator)
+// getBalance returns a high lamport balance — well above the rent-exempt minimum (890,880).
+// This prevents the delinquency-due-to-low-balance code path from triggering.
+func (s *MockSolanaServer) getBalance() BalanceResult {
+	var result BalanceResult
+	result.Context.Slot = currentSlot
+	result.Value = 10_000_000_000
+	return result
 }
 
-func (s *MockSolanaServer) ReconnectValidator(validator string) {
+// ── Backward-compatible legacy endpoints ──────────────────────────────────────
+
+// handleControl keeps the old /control endpoint working for any existing tooling.
+func (s *MockSolanaServer) handleControl(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		ActiveValidator string `json:"active_validator"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.disconnected, validator)
-	log.Printf("Validator reconnected: %s", validator)
+	s.activeValidator = body.ActiveValidator
+	s.mu.Unlock()
+	log.Printf("[control/legacy] set active_validator=%q", body.ActiveValidator)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleNetwork keeps the old /network endpoint working for any existing tooling.
+func (s *MockSolanaServer) handleNetwork(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		DisconnectValidator string `json:"disconnect_validator"`
+		ReconnectValidator  string `json:"reconnect_validator"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	if body.DisconnectValidator != "" {
+		s.disconnected[body.DisconnectValidator] = true
+		if s.activeValidator == body.DisconnectValidator {
+			s.activeValidator = ""
+		}
+		log.Printf("[network/legacy] disconnected %q", body.DisconnectValidator)
+	}
+	if body.ReconnectValidator != "" {
+		delete(s.disconnected, body.ReconnectValidator)
+		log.Printf("[network/legacy] reconnected %q", body.ReconnectValidator)
+	}
+	s.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 func main() {
 	server := NewMockSolanaServer()
 
 	http.HandleFunc("/", server.handleRPC)
+	http.HandleFunc("/action", server.handleAction)
+	http.HandleFunc("/public-ip", server.handlePublicIP)
+	// Legacy endpoints kept for backward compatibility
 	http.HandleFunc("/control", server.handleControl)
 	http.HandleFunc("/network", server.handleNetwork)
-	http.HandleFunc("/public-ip", server.handlePublicIP)
 
 	port := ":8899"
-	log.Printf("Mock Solana RPC server starting on port %s", port)
-	log.Printf("Active validator: %s", server.activeValidator)
-	log.Printf("Public IP service available at: http://localhost%s/public-ip", port)
+	log.Printf("mock-solana starting on %s", port)
+	log.Printf("initial active validator: %q", server.activeValidator)
+	log.Printf("started at %s", time.Now().Format(time.RFC3339))
 
 	if err := http.ListenAndServe(port, nil); err != nil {
 		log.Fatal(err)
