@@ -4,7 +4,7 @@ A gossip-based high availability (HA) manager for Solana validators. This tool h
 
 ## Demo
 
-`validator-1` (active) loses network connectivity. A passive peer detects the leaderless cluster and takes over — automatically, in ~12 seconds.
+`validator-1` (active) loses network connectivity. A passive peer detects the leaderless cluster and takes over automatically.
 
 Passive node (`validator-2`) monitoring the cluster and promoting itself to active:
 

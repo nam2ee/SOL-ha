@@ -32,7 +32,7 @@ func NewClient(logPrefix string, urls ...string) *Client {
 		clients[url] = rpc.New(url)
 	}
 	return &Client{
-		logger:            log.WithPrefix(fmt.Sprintf("[%s rpc_client]", logPrefix)),
+		logger:            log.WithPrefix("[rpc_client]"),
 		urls:              urls,
 		clients:           clients,
 		lastSuccessfulURL: "",
