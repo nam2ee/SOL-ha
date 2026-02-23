@@ -15,8 +15,10 @@ Set PlaybackSpeed 2
 
 Sleep 300ms
 
+Hide
 Type "bash integration/scripts/demo-active-node.sh"
 Enter
+Show
 
 # Real time for the script: ~28 s
 #   3 s settle + 25 s log stream (covering 10 s steady + 12 s failover + 3 s post)

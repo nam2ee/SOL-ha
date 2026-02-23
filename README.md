@@ -14,8 +14,6 @@ Active node (`validator-1`) detecting it has dropped from gossip and stepping do
 
 ![active node handover](docs/active-node.gif)
 
-> GIFs auto-generated on every merge to master via [VHS](https://github.com/charmbracelet/vhs) + the integration test harness.
-
 ## How it works
 
 `solana-validator-ha` provides a simple, low-dependency HA solution for running 2 or more Solana validators together, where one is `active` (voting) and the rest are `passive` (non-voting). All peers share the same `active` keypair identity and each has its own unique `passive` keypair identity.
