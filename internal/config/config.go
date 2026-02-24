@@ -181,8 +181,10 @@ func (c *Config) validate() error {
 		return err
 	}
 
-	// cluster.rpc_urls must not contain the local validator RPC URL
-	// Using local RPC for gossip queries can result in stale data and inconsistent cluster views
+	// cluster.rpc_urls may contain the local validator RPC URL, but only when HA peers
+	// are configured as mutual --entrypoint flags (enabling direct CRDS gossip exchange).
+	// Without mutual --entrypoints, local gossip data for peers may be stale. It is safe
+	// as a last-resort fallback alongside other URLs since it is immune to rate limiting.
 	validatorRPCHost, err := urlHost(c.Validator.RPCURL)
 	if err != nil {
 		return fmt.Errorf("failed to parse validator.rpc_url host: %w", err)
@@ -193,7 +195,8 @@ func (c *Config) validate() error {
 			continue // Already validated in Cluster.Validate()
 		}
 		if clusterRPCHost == validatorRPCHost {
-			return fmt.Errorf("cluster.rpc_urls must not contain the local validator RPC URL (%s) - using local RPC for gossip queries can result in stale data", c.Validator.RPCURL)
+			c.logger.Warnf("cluster.rpc_urls contains the local validator RPC URL (%s) - ensure HA peers are configured as mutual --entrypoint flags for direct gossip, otherwise peer state may be stale", c.Validator.RPCURL)
+			break
 		}
 	}
 

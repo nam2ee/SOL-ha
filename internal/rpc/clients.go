@@ -11,7 +11,12 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/gagliardetto/solana-go/rpc/jsonrpc"
 )
+
+// urlCooldownDuration is how long a URL that returned a permanent HTTP error (403/429/503)
+// is deprioritised before being retried again.
+const urlCooldownDuration = 60 * time.Second
 
 // Client represents an RPC client that can handle multiple URLs
 type Client struct {
@@ -21,8 +26,10 @@ type Client struct {
 	clients map[string]*rpc.Client
 	// lastSuccessfulURL tracks the last URL that succeeded to avoid it for throttling protection
 	lastSuccessfulURL string
-	timeout           time.Duration
-	logger            *log.Logger
+	// urlCooldowns tracks when rate-limited / access-forbidden URLs may be retried again
+	urlCooldowns map[string]time.Time
+	timeout      time.Duration
+	logger       *log.Logger
 }
 
 // NewClient creates a new RPC client with one or more URLs
@@ -36,6 +43,7 @@ func NewClient(logPrefix string, urls ...string) *Client {
 		urls:              urls,
 		clients:           clients,
 		lastSuccessfulURL: "",
+		urlCooldowns:      make(map[string]time.Time),
 		timeout:           5 * time.Second, // Default timeout
 	}
 }
@@ -53,26 +61,43 @@ type rpcOperation[T any] struct {
 	execute func(*rpc.Client, context.Context) (T, error)
 }
 
-// getURLsToTry returns URLs to try with lastSuccessfulURL at the end for throttling protection
+// getURLsToTry returns URLs ordered for optimal reliability:
+//
+//  1. Active URLs (not lastSuccessfulURL, not in cooldown) — tried first to spread load
+//  2. lastSuccessfulURL (if not in cooldown) — known-good, used as fallback
+//  3. Cooling-down URLs (403/429/503) — tried last, after all healthy options are exhausted
 func (c *Client) getURLsToTry() []string {
-	if len(c.urls) <= 1 || c.lastSuccessfulURL == "" {
+	if len(c.urls) <= 1 {
 		return c.urls
 	}
 
-	// Build list with lastSuccessfulURL at the end
-	urlsToTry := make([]string, 0, len(c.urls))
+	now := time.Now()
+	activeURLs := make([]string, 0, len(c.urls))
+	coolingURLs := make([]string, 0)
+	lastSuccessfulInCooldown := false
 
-	// Add all URLs except lastSuccessfulURL first
 	for _, url := range c.urls {
-		if url != c.lastSuccessfulURL {
-			urlsToTry = append(urlsToTry, url)
+		inCooldown := c.urlCooldowns[url].After(now)
+		if url == c.lastSuccessfulURL {
+			lastSuccessfulInCooldown = inCooldown
+			continue // placed explicitly below
+		}
+		if inCooldown {
+			coolingURLs = append(coolingURLs, url)
+		} else {
+			activeURLs = append(activeURLs, url)
 		}
 	}
 
-	// Add lastSuccessfulURL at the end (as fallback)
-	urlsToTry = append(urlsToTry, c.lastSuccessfulURL)
-
-	return urlsToTry
+	result := activeURLs
+	if c.lastSuccessfulURL != "" {
+		if lastSuccessfulInCooldown {
+			coolingURLs = append(coolingURLs, c.lastSuccessfulURL)
+		} else {
+			result = append(result, c.lastSuccessfulURL)
+		}
+	}
+	return append(result, coolingURLs...)
 }
 
 // executeWithRetry executes an RPC method, trying URLs in throttling-optimized order
@@ -97,6 +122,18 @@ func executeWithRetry[T any](c *Client, ctx context.Context, op rpcOperation[T])
 		})
 
 		if err != nil {
+			if isPermanentHTTPError(err) {
+				now := time.Now()
+				alreadyCooling := c.urlCooldowns[url].After(now)
+				c.urlCooldowns[url] = now.Add(urlCooldownDuration)
+				if !alreadyCooling {
+					c.logger.Warn("RPC endpoint rate-limited or access forbidden, cooling down",
+						"method", op.name,
+						"url", url,
+						"cooldown", urlCooldownDuration,
+					)
+				}
+			}
 			c.logger.Debug("method call failed", "method", op.name, "error", err, "rpc_url", url)
 			errors = append(errors, err)
 			continue
@@ -181,6 +218,26 @@ func (c *Client) GetHealth(ctx context.Context) (string, error) {
 	}
 
 	return result, nil
+}
+
+// isPermanentHTTPError returns true when the error signals that the endpoint actively
+// refused the request (403 Forbidden, 429 Too Many Requests, 503 Service Unavailable).
+// These are distinct from transient network errors: they won't resolve by immediately
+// retrying the same URL, so the caller should impose a cooldown before trying it again.
+//
+// The library surfaces two concrete error types for this:
+//   - *jsonrpc.RPCError  — server responded with a JSON-RPC error body (Code is the RPC code)
+//   - *jsonrpc.HTTPError — server returned a non-JSON 4xx/5xx (Code is the HTTP status)
+func isPermanentHTTPError(err error) bool {
+	var rpcErr *jsonrpc.RPCError
+	if errors.As(err, &rpcErr) {
+		return rpcErr.Code == 403 || rpcErr.Code == 429 || rpcErr.Code == 503
+	}
+	var httpErr *jsonrpc.HTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.Code == 403 || httpErr.Code == 429 || httpErr.Code == 503
+	}
+	return false
 }
 
 // extractErrorMessage extracts just the message from an RPC error
