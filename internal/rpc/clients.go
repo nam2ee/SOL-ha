@@ -148,16 +148,6 @@ func executeWithRetry[T any](c *Client, ctx context.Context, op rpcOperation[T])
 	return zero, fmt.Errorf("method call failed on all RPC endpoints method: %s, attempted_urls: %v, errors: %v", op.name, attemptedURLs, errors)
 }
 
-// GetSlot gets the current slot from the first working RPC client
-func (c *Client) GetSlot(ctx context.Context) (uint64, error) {
-	return executeWithRetry(c, ctx, rpcOperation[uint64]{
-		name: "GetSlot",
-		execute: func(client *rpc.Client, ctx context.Context) (uint64, error) {
-			return client.GetSlot(ctx, rpc.CommitmentProcessed)
-		},
-	})
-}
-
 // GetVoteAccounts gets the vote accounts from the first working RPC client
 
 func (c *Client) GetVoteAccounts(ctx context.Context, opts *rpc.GetVoteAccountsOpts) (*rpc.GetVoteAccountsResult, error) {

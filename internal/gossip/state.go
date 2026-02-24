@@ -373,20 +373,15 @@ func (p *State) getSortedIPs() []string {
 
 // isNodeActiveAndVoting returns true if the node is active and voting
 func (p *State) isNodeActiveAndVoting(node solanagorpc.GetClusterNodesResult) bool {
-	// get the current slot
-	currentSlot, err := p.clusterRPC.GetSlot(context.Background())
-	if err != nil {
-		p.logger.Error("failed to get current slot", "error", err)
-		return true // forgive rpc error and assume innocence lest we trigger a false-positive failover
-	}
-
 	// configure get vote accounts options
+	delinquentSlotDistance := uint64(150) // Solana SDK default
 	getVoteAccountsOpts := solanagorpc.GetVoteAccountsOpts{
 		Commitment: solanagorpc.CommitmentProcessed,
 	}
 
 	// if configured, override the sdk delinquent slot distance value with a config-supplied value
 	if p.delinquentSlotDistanceOverride.Enabled {
+		delinquentSlotDistance = p.delinquentSlotDistanceOverride.Value
 		getVoteAccountsOpts.DelinquentSlotDistance = &p.delinquentSlotDistanceOverride.Value
 	}
 
@@ -416,17 +411,15 @@ func (p *State) isNodeActiveAndVoting(node solanagorpc.GetClusterNodesResult) bo
 			p.logger.Error("‼️ node is delinquent from balance being below rent-exempt minimum - assuming still active to not trigger a false-positive failover - FIX balance pronto!",
 				"gossip_address", *node.Gossip,
 				"pubkey", node.Pubkey.String(),
-				"current_slot", currentSlot,
 				"balance", balance.Value,
 			)
 			return true
 		}
 
 		// ohhh shit! we're delinquent - snitch on this guy!
-		p.logger.Error(fmt.Sprintf("‼️ node is delinquent - not voting (%d slots behind)", currentSlot-delinquentVoteAccount.LastVote),
+		p.logger.Error(fmt.Sprintf("‼️ node is delinquent - not voting (behind %d slots or more)", delinquentSlotDistance),
 			"gossip_address", *node.Gossip,
 			"pubkey", node.Pubkey.String(),
-			"current_slot", currentSlot,
 			"last_voted_at_slot", delinquentVoteAccount.LastVote,
 		)
 		return false
@@ -454,7 +447,6 @@ func (p *State) isNodeActiveAndVoting(node solanagorpc.GetClusterNodesResult) bo
 		p.logger.Warn("no current or delinquent vote account found for node",
 			"gossip_address", *node.Gossip,
 			"pubkey", node.Pubkey.String(),
-			"current_slot", currentSlot,
 		)
 		return false
 	}
@@ -465,7 +457,6 @@ func (p *State) isNodeActiveAndVoting(node solanagorpc.GetClusterNodesResult) bo
 		"pubkey", node.Pubkey.String(),
 		"vote_account_pubkey", nodeVoteAccount.VotePubkey.String(),
 		"last_voted_at_slot", nodeVoteAccount.LastVote,
-		"current_slot", currentSlot,
 	)
 
 	return true
