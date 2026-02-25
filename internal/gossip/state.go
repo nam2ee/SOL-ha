@@ -376,6 +376,16 @@ func (p *State) getSortedIPs() []string {
 	return ips
 }
 
+// cacheVotePubkey upserts the vote pubkey for the given vote account, logging only when the value is new or changed.
+func (p *State) cacheVotePubkey(voteAccount solanagorpc.VoteAccountsResult) {
+	identityKey := voteAccount.NodePubkey.String()
+	if existing, ok := p.votePubkeyCache[identityKey]; ok && existing.Equals(voteAccount.VotePubkey) {
+		return
+	}
+	p.votePubkeyCache[identityKey] = voteAccount.VotePubkey
+	p.logger.Info("cached vote account pubkey", "vote_pubkey", voteAccount.VotePubkey.String(), "identity", identityKey)
+}
+
 // isNodeActiveAndVoting returns true if the node is active and voting.
 // On the first call for a given identity pubkey, getVoteAccounts is called unfiltered and the
 // discovered vote pubkey is cached. Subsequent calls use the votePubkey filter, reducing the
@@ -399,7 +409,6 @@ func (p *State) isNodeActiveAndVoting(node solanagorpc.GetClusterNodesResult) bo
 
 	// attempt a filtered call if we have a cached vote pubkey for this identity
 	var voteAccounts *solanagorpc.GetVoteAccountsResult
-	mustCacheVotePubkey := true
 	if cached, ok := p.votePubkeyCache[identityKey]; ok {
 		opts := buildOpts(&cached)
 		result, err := p.clusterRPC.GetVoteAccounts(context.Background(), &opts)
@@ -413,12 +422,11 @@ func (p *State) isNodeActiveAndVoting(node solanagorpc.GetClusterNodesResult) bo
 			delete(p.votePubkeyCache, identityKey)
 		} else {
 			voteAccounts = result
-			mustCacheVotePubkey = false
 		}
 	}
 
 	// unfiltered call - used on first call or after cache eviction; also discovers and caches vote pubkey
-	if mustCacheVotePubkey {
+	if voteAccounts == nil {
 		opts := buildOpts(nil)
 		result, err := p.clusterRPC.GetVoteAccounts(context.Background(), &opts)
 		if err != nil {
@@ -435,9 +443,7 @@ func (p *State) isNodeActiveAndVoting(node solanagorpc.GetClusterNodesResult) bo
 			continue
 		}
 
-		if mustCacheVotePubkey {
-			p.votePubkeyCache[identityKey] = delinquentVoteAccount.VotePubkey
-		}
+		p.cacheVotePubkey(delinquentVoteAccount)
 
 		// ok we might be legit delinquent but let's check if the node's identity balance is below the rent-exempt balance
 		balance, err := p.clusterRPC.GetBalance(context.Background(), delinquentVoteAccount.NodePubkey)
@@ -472,9 +478,7 @@ func (p *State) isNodeActiveAndVoting(node solanagorpc.GetClusterNodesResult) bo
 		if !voteAccount.NodePubkey.Equals(node.Pubkey) {
 			continue
 		}
-		if mustCacheVotePubkey {
-			p.votePubkeyCache[identityKey] = voteAccount.VotePubkey
-		}
+		p.cacheVotePubkey(voteAccount)
 		found = true
 		nodeVoteAccount = &voteAccount
 		break
