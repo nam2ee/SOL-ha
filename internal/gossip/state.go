@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
+	solana "github.com/gagliardetto/solana-go"
 	solanagorpc "github.com/gagliardetto/solana-go/rpc"
 	"github.com/sol-strategies/solana-validator-ha/internal/config"
 	"github.com/sol-strategies/solana-validator-ha/internal/rpc"
@@ -34,6 +35,9 @@ type State struct {
 	configUndeclaredActivePeer     PeerState
 	// peerLastSeenAtByName tracks the last time each peer was seen in gossip, persists even when peer goes missing
 	peerLastSeenAtByName map[string]time.Time
+	// votePubkeyCache maps identity pubkey -> vote account pubkey, populated on first getVoteAccounts call
+	// to allow subsequent calls to use the votePubkey filter and avoid fetching all ~1500 validators
+	votePubkeyCache map[string]solana.PublicKey
 }
 
 // PeerState represents the state of a peer as seen by the solana network
@@ -72,6 +76,7 @@ func NewState(opts Options) *State {
 		configPeers:                    opts.ConfigPeers,
 		peerStatesByName:               make(map[string]PeerState),
 		peerLastSeenAtByName:           make(map[string]time.Time),
+		votePubkeyCache:                make(map[string]solana.PublicKey),
 		delinquentSlotDistanceOverride: opts.DelinquentSlotDistanceOverride,
 	}
 }
@@ -371,33 +376,67 @@ func (p *State) getSortedIPs() []string {
 	return ips
 }
 
-// isNodeActiveAndVoting returns true if the node is active and voting
+// isNodeActiveAndVoting returns true if the node is active and voting.
+// On the first call for a given identity pubkey, getVoteAccounts is called unfiltered and the
+// discovered vote pubkey is cached. Subsequent calls use the votePubkey filter, reducing the
+// response from ~1500 entries to 1. If a filtered call returns empty (e.g. after a key rotation),
+// the cache entry is cleared and the call falls back to unfiltered for that cycle.
 func (p *State) isNodeActiveAndVoting(node solanagorpc.GetClusterNodesResult) bool {
-	// configure get vote accounts options
 	delinquentSlotDistance := uint64(150) // Solana SDK default
-	getVoteAccountsOpts := solanagorpc.GetVoteAccountsOpts{
-		Commitment: solanagorpc.CommitmentProcessed,
+	identityKey := node.Pubkey.String()
+
+	buildOpts := func(votePubkey *solana.PublicKey) solanagorpc.GetVoteAccountsOpts {
+		opts := solanagorpc.GetVoteAccountsOpts{
+			Commitment: solanagorpc.CommitmentProcessed,
+			VotePubkey: votePubkey,
+		}
+		if p.delinquentSlotDistanceOverride.Enabled {
+			delinquentSlotDistance = p.delinquentSlotDistanceOverride.Value
+			opts.DelinquentSlotDistance = &p.delinquentSlotDistanceOverride.Value
+		}
+		return opts
 	}
 
-	// if configured, override the sdk delinquent slot distance value with a config-supplied value
-	if p.delinquentSlotDistanceOverride.Enabled {
-		delinquentSlotDistance = p.delinquentSlotDistanceOverride.Value
-		getVoteAccountsOpts.DelinquentSlotDistance = &p.delinquentSlotDistanceOverride.Value
+	// attempt a filtered call if we have a cached vote pubkey for this identity
+	var voteAccounts *solanagorpc.GetVoteAccountsResult
+	mustCacheVotePubkey := true
+	if cached, ok := p.votePubkeyCache[identityKey]; ok {
+		opts := buildOpts(&cached)
+		result, err := p.clusterRPC.GetVoteAccounts(context.Background(), &opts)
+		if err != nil {
+			p.logger.Error("failed to get vote accounts", "error", err)
+			return true // forgive rpc error and assume innocence lest we trigger a false-positive failover
+		}
+		if len(result.Current) == 0 && len(result.Delinquent) == 0 {
+			// cached vote pubkey is stale (key rotation?) - clear and fall back to unfiltered
+			p.logger.Warn("cached vote pubkey returned empty result, re-discovering", "identity_pubkey", identityKey)
+			delete(p.votePubkeyCache, identityKey)
+		} else {
+			voteAccounts = result
+			mustCacheVotePubkey = false
+		}
 	}
 
-	// get vote accounts to look for our node within
-	voteAccounts, err := p.clusterRPC.GetVoteAccounts(context.Background(), &getVoteAccountsOpts)
-	if err != nil {
-		p.logger.Error("failed to get vote accounts", "error", err)
-		return true // forgive rpc error and assume innocence lest we trigger a false-positive failover
+	// unfiltered call - used on first call or after cache eviction; also discovers and caches vote pubkey
+	if mustCacheVotePubkey {
+		opts := buildOpts(nil)
+		result, err := p.clusterRPC.GetVoteAccounts(context.Background(), &opts)
+		if err != nil {
+			p.logger.Error("failed to get vote accounts", "error", err)
+			return true // forgive rpc error and assume innocence lest we trigger a false-positive failover
+		}
+		voteAccounts = result
 	}
 
 	// if the node is in the delinquent list - it is not voting, but forgive delinquency due to low balance
 	// because failing over in this case definitely won't fix things anyway
 	for _, delinquentVoteAccount := range voteAccounts.Delinquent {
-		// not us - keep looking
 		if !delinquentVoteAccount.NodePubkey.Equals(node.Pubkey) {
 			continue
+		}
+
+		if mustCacheVotePubkey {
+			p.votePubkeyCache[identityKey] = delinquentVoteAccount.VotePubkey
 		}
 
 		// ok we might be legit delinquent but let's check if the node's identity balance is below the rent-exempt balance
@@ -429,14 +468,13 @@ func (p *State) isNodeActiveAndVoting(node solanagorpc.GetClusterNodesResult) bo
 	var nodeVoteAccount *solanagorpc.VoteAccountsResult
 	found := false
 
-	// try to find our node in the retrieved current vote accounts
 	for _, voteAccount := range voteAccounts.Current {
-		// not us - keep looking
 		if !voteAccount.NodePubkey.Equals(node.Pubkey) {
 			continue
 		}
-
-		// it is us - let's see wtf is gong on
+		if mustCacheVotePubkey {
+			p.votePubkeyCache[identityKey] = voteAccount.VotePubkey
+		}
 		found = true
 		nodeVoteAccount = &voteAccount
 		break
@@ -451,7 +489,6 @@ func (p *State) isNodeActiveAndVoting(node solanagorpc.GetClusterNodesResult) bo
 		return false
 	}
 
-	// found us
 	p.logger.Debug("node found in current vote accounts",
 		"gossip_address", *node.Gossip,
 		"pubkey", node.Pubkey.String(),
