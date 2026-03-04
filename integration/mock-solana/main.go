@@ -32,16 +32,23 @@ var validatorMeta = map[string]struct {
 type MockSolanaServer struct {
 	mu               sync.RWMutex
 	activeValidator  string          // which validator currently holds the active identity
+	activeValidators map[string]bool // additional actives for dual-active/split-brain scenarios
 	disconnected     map[string]bool // validators removed from gossip
 	unhealthy        map[string]bool // validators whose local health check returns unhealthy
 	callingValidator string          // populated from ?validator= query param per request
 }
 
+// isActive returns true if the given validator is active (via set_active or add_active).
+func (s *MockSolanaServer) isActive(name string) bool {
+	return name == s.activeValidator || s.activeValidators[name]
+}
+
 func NewMockSolanaServer() *MockSolanaServer {
 	return &MockSolanaServer{
-		activeValidator: os.Getenv("ACTIVE_VALIDATOR"),
-		disconnected:    make(map[string]bool),
-		unhealthy:       make(map[string]bool),
+		activeValidator:  os.Getenv("ACTIVE_VALIDATOR"),
+		activeValidators: make(map[string]bool),
+		disconnected:     make(map[string]bool),
+		unhealthy:        make(map[string]bool),
 	}
 }
 
@@ -183,6 +190,10 @@ func (s *MockSolanaServer) handleAction(w http.ResponseWriter, r *http.Request) 
 		delete(s.disconnected, action.Target)
 		log.Printf("[control] reconnect: %q", action.Target)
 
+	case "add_active":
+		s.activeValidators[action.Target] = true
+		log.Printf("[control] add_active: %q (additional actives: %d)", action.Target, len(s.activeValidators))
+
 	case "set_unhealthy":
 		s.unhealthy[action.Target] = true
 		log.Printf("[control] set_unhealthy: %q", action.Target)
@@ -195,6 +206,7 @@ func (s *MockSolanaServer) handleAction(w http.ResponseWriter, r *http.Request) 
 		// Reconnect all validators, clear all unhealthy state, set initial active.
 		s.disconnected = make(map[string]bool)
 		s.unhealthy = make(map[string]bool)
+		s.activeValidators = make(map[string]bool)
 		s.activeValidator = action.Target
 		log.Printf("[control] reset: active=%q", action.Target)
 
@@ -248,7 +260,7 @@ func (s *MockSolanaServer) getClusterNodes() []ClusterNode {
 		}
 
 		pubkey := meta.passivePubkey
-		if name == s.activeValidator {
+		if s.isActive(name) {
 			pubkey = activePubkey
 		}
 
@@ -271,7 +283,7 @@ func (s *MockSolanaServer) getIdentity() map[string]any {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.callingValidator == s.activeValidator && s.activeValidator != "" {
+	if s.isActive(s.callingValidator) {
 		return map[string]any{"identity": activePubkey}
 	}
 
@@ -301,9 +313,20 @@ func (s *MockSolanaServer) getVoteAccounts() VoteAccountsResult {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.activeValidator == "" || s.disconnected[s.activeValidator] {
+	// Check if any validator is active and not disconnected.
+	hasActive := false
+	if s.activeValidator != "" && !s.disconnected[s.activeValidator] {
+		hasActive = true
+	}
+	for name := range s.activeValidators {
+		if !s.disconnected[name] {
+			hasActive = true
+			break
+		}
+	}
+	if !hasActive {
 		return VoteAccountsResult{
-			Current:   []VoteAccount{},
+			Current:    []VoteAccount{},
 			Delinquent: []VoteAccount{},
 		}
 	}

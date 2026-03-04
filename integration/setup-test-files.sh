@@ -2,76 +2,62 @@
 
 set -e
 
-echo "🔑 Setting up test identity files..."
+echo "Setting up test identity files..."
 
-# Create test-files directory if it doesn't exist
 mkdir -p ./test-files
 
-# Create a simple Go program to generate proper solana keygen files
-cat > ./test-files/generate-keys.go << 'EOF'
-package main
+# Generate Solana-format keypair files using Python (ships with macOS, no deps needed).
+# The pubkeys (bytes[32:64]) MUST match the hardcoded values in mock-solana/main.go
+# so that getIdentity verification passes during integration tests.
+python3 -c '
+import json, os, secrets
 
-import (
-	"encoding/json"
-	"fmt"
-	"os"
+# Base58 alphabet (Bitcoin/Solana variant)
+B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
-	"github.com/gagliardetto/solana-go"
-)
+def b58decode(s):
+    """Decode a base58-encoded string to bytes."""
+    n = 0
+    for c in s:
+        n = n * 58 + B58_ALPHABET.index(c)
+    # Convert to bytes
+    result = []
+    while n > 0:
+        result.append(n & 0xFF)
+        n >>= 8
+    result.reverse()
+    # Handle leading 1s (zero bytes)
+    pad = len(s) - len(s.lstrip("1"))
+    return bytes(pad) + bytes(result)
 
-func main() {
-	// Generate shared active keypair
-	activeKeypair := solana.NewWallet()
-	activeBytes := activeKeypair.PrivateKey
-	activeArray := make([]int, len(activeBytes))
-	for i, b := range activeBytes {
-		activeArray[i] = int(b)
-	}
-	
-	// Write active keypair
-	activeData, _ := json.Marshal(activeArray)
-	os.WriteFile("active-identity.json", activeData, 0644)
-	
-	// Generate different passive keypairs for each validator
-	for i := 1; i <= 3; i++ {
-		passiveKeypair := solana.NewWallet()
-		passiveBytes := passiveKeypair.PrivateKey
-		passiveArray := make([]int, len(passiveBytes))
-		for j, b := range passiveBytes {
-			passiveArray[j] = int(b)
-		}
-		
-		// Write passive keypair
-		passiveData, _ := json.Marshal(passiveArray)
-		filename := fmt.Sprintf("passive-identity-%d.json", i)
-		os.WriteFile(filename, passiveData, 0644)
-	}
-	
-	fmt.Println("✅ Generated keypairs:")
-	fmt.Printf("  Active public key: %s\n", activeKeypair.PublicKey().String())
-	for i := 1; i <= 3; i++ {
-		passiveKeypair := solana.NewWallet()
-		fmt.Printf("  Passive-%d public key: %s\n", i, passiveKeypair.PublicKey().String())
-	}
-}
-EOF
+def generate_keypair(filename, pubkey_b58):
+    """Generate a Solana keypair file: [seed(32) + pubkey(32)] as JSON array of ints.
+    The seed is random (not cryptographically valid for the pubkey) but that is fine
+    because the HA manager only reads bytes[32:64] as the public key."""
+    pubkey_bytes = b58decode(pubkey_b58)
+    assert len(pubkey_bytes) == 32, f"pubkey must be 32 bytes, got {len(pubkey_bytes)}"
 
-# Run the Go program to generate proper keypairs
-cd ./test-files
-go mod init test-keys
-go mod tidy
-go run generate-keys.go
+    seed = secrets.token_bytes(32)
+    keypair = list(seed + pubkey_bytes)
 
-# Clean up the Go files
-rm -f generate-keys.go go.mod go.sum
+    with open(filename, "w") as f:
+        json.dump(keypair, f)
 
-echo "✅ Test identity files created successfully!"
-echo "  - active-identity.json (shared by all validators)"
-echo "  - passive-identity-1.json (validator-1 passive)"
-echo "  - passive-identity-2.json (validator-2 passive)"
-echo "  - passive-identity-3.json (validator-3 passive)"
+    print(f"  {filename}: pubkey={pubkey_b58}")
 
-# Set proper permissions
-chmod 644 ./test-files/*.json
+# These pubkeys MUST match the constants in integration/mock-solana/main.go
+ACTIVE_PUBKEY     = "ArkzFExXXHaA6izkNhTJJ5zpXdQpynffjfRMJu4Yq6H"
+PASSIVE_1_PUBKEY  = "AP4JyZq2vuN4u64FGFHTwdG11xHu1vZWVYQj21MPLrnw"
+PASSIVE_2_PUBKEY  = "DJ7w4p8Ve7qdSAmkpA3sviSbsd1HPUxd43x7MTH72JHT"
+PASSIVE_3_PUBKEY  = "5dXttfrjFEEExmZhVmVAdw2LzepNAhFYJTUgPCDk8CYD"
 
-echo "📁 Test files are ready for integration testing" 
+os.chdir("./test-files")
+generate_keypair("active-identity.json",     ACTIVE_PUBKEY)
+generate_keypair("passive-identity-1.json",  PASSIVE_1_PUBKEY)
+generate_keypair("passive-identity-2.json",  PASSIVE_2_PUBKEY)
+generate_keypair("passive-identity-3.json",  PASSIVE_3_PUBKEY)
+'
+
+echo ""
+echo "Test identity files created (pubkeys match mock-solana constants)"
+echo "Test files are ready for integration testing"

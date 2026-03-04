@@ -1,0 +1,58 @@
+name: all-unhealthy-no-deadlock
+description: >
+  When all passive validators are unhealthy and the active disconnects, no new
+  active should be elected (the system remains leaderless but does not crash or
+  deadlock). Once one passive recovers health, it takes over.
+
+initial_state:
+  active_validator: validator-1
+
+steps:
+  - name: assert initial state
+    action: assert
+    timeout: 30s
+    active_count: 1
+    state:
+      validator-1:
+        role: active
+      validator-2:
+        role: passive
+      validator-3:
+        role: passive
+
+  - name: mark validator-2 unhealthy
+    action: set_unhealthy
+    target: validator-2
+
+  - name: mark validator-3 unhealthy
+    action: set_unhealthy
+    target: validator-3
+
+  - name: wait for healthy streaks to reset
+    action: wait
+    duration: 8s
+
+  - name: disconnect active validator
+    action: disconnect
+    target: validator-1
+
+  - name: no active elected (all passives are unhealthy)
+    action: assert
+    timeout: 30s
+    active_count: 0
+
+  - name: recover validator-3 health
+    action: set_healthy
+    target: validator-3
+
+  - name: validator-3 becomes active after healthy streak matures
+    action: assert
+    timeout: 45s
+    active_count: 1
+    state:
+      validator-3:
+        role: active
+
+  - name: restore validator-2 health (cleanup)
+    action: set_healthy
+    target: validator-2

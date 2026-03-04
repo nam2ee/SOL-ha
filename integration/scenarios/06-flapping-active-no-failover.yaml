@@ -1,0 +1,53 @@
+name: flapping-active-no-failover
+description: >
+  The active validator disconnects briefly (shorter than the leaderless threshold
+  window of 9s) and reconnects. No failover should occur. This tests system
+  stability under transient network issues.
+
+initial_state:
+  active_validator: validator-1
+
+steps:
+  - name: assert initial state
+    action: assert
+    timeout: 30s
+    active_count: 1
+    state:
+      validator-1:
+        role: active
+      validator-2:
+        role: passive
+      validator-3:
+        role: passive
+
+  - name: briefly disconnect active validator
+    action: disconnect
+    target: validator-1
+
+  - name: wait less than leaderless threshold (5s < 9s threshold)
+    action: wait
+    duration: 5s
+
+  - name: reconnect active validator
+    action: reconnect
+    target: validator-1
+
+  - name: restore active identity after reconnect
+    action: set_active
+    target: validator-1
+
+  - name: wait for system to stabilize
+    action: wait
+    duration: 5s
+
+  - name: original active is still active (no unnecessary failover)
+    action: assert
+    timeout: 20s
+    active_count: 1
+    state:
+      validator-1:
+        role: active
+      validator-2:
+        role: passive
+      validator-3:
+        role: passive

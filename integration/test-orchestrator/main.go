@@ -185,7 +185,7 @@ func (o *Orchestrator) executeStep(step Step) error {
 		time.Sleep(d)
 		return nil
 
-	case "set_active", "disconnect", "reconnect", "set_unhealthy", "set_healthy":
+	case "set_active", "add_active", "disconnect", "reconnect", "set_unhealthy", "set_healthy":
 		return o.callAction(step.Action, step.Target)
 
 	case "assert":
