@@ -1,0 +1,37 @@
+name: rank-based-election
+description: >
+  When the active validator disconnects, multiple passives are eligible.
+  The IP-rank mechanism should deterministically select the lowest-ranked
+  (lowest IP) validator. validator-2 (10.0.0.101) has lower IP than
+  validator-3 (10.0.0.102), so validator-2 MUST become active — not just
+  "any one of them".
+
+initial_state:
+  active_validator: validator-1
+
+steps:
+  - name: assert initial state
+    action: assert
+    timeout: 30s
+    active_count: 1
+    state:
+      validator-1:
+        role: active
+      validator-2:
+        role: passive
+      validator-3:
+        role: passive
+
+  - name: disconnect active validator
+    action: disconnect
+    target: validator-1
+
+  - name: validator-2 (rank-0) must become active, not validator-3
+    action: assert
+    timeout: 45s
+    active_count: 1
+    state:
+      validator-2:
+        role: active
+      validator-3:
+        role: passive

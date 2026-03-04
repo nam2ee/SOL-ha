@@ -1,0 +1,19 @@
+name: cold-start-no-leader
+description: >
+  The cluster starts with NO active validator (cold start / bootstrap).
+  All nodes see an empty leader in gossip. One node should voluntarily
+  elect itself as active after the leaderless threshold is reached.
+  This verifies the system can bootstrap from zero, not just recover
+  from a leader disappearing.
+  Note: the orchestrator's 15s stabilisation window is enough for
+  the leaderless threshold to fire, so we simply verify that exactly
+  one node self-elected by the time the first assert runs.
+
+initial_state:
+  active_validator: ""
+
+steps:
+  - name: one node self-elects as active from cold start
+    action: assert
+    timeout: 45s
+    active_count: 1
