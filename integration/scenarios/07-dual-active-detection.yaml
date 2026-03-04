@@ -1,0 +1,45 @@
+name: dual-active-detection
+description: >
+  Two validators are simultaneously set to active identity, simulating a
+  split-brain condition. This scenario documents current behavior: the system
+  does NOT detect or resolve dual-active. Both validators remain active
+  indefinitely. This is a known gap (no dual-active guard exists).
+  When a guard is implemented, update this scenario to assert active_count: 1.
+
+initial_state:
+  active_validator: validator-1
+
+steps:
+  - name: assert initial state
+    action: assert
+    timeout: 30s
+    active_count: 1
+    state:
+      validator-1:
+        role: active
+      validator-2:
+        role: passive
+      validator-3:
+        role: passive
+
+  - name: disconnect validator-1 to create leaderless state
+    action: disconnect
+    target: validator-1
+
+  - name: wait for a passive to take over
+    action: assert
+    timeout: 45s
+    active_count: 1
+
+  - name: force validator-3 active (simulating split-brain)
+    action: add_active
+    target: validator-3
+
+  - name: wait for validator-3 to detect its active identity
+    action: wait
+    duration: 10s
+
+  - name: dual-active persists (NO guard exists - documenting current gap)
+    action: assert
+    timeout: 20s
+    active_count: 2
