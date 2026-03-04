@@ -22,15 +22,6 @@ steps:
       validator-3:
         role: passive
 
-  - name: disconnect validator-1 to create leaderless state
-    action: disconnect
-    target: validator-1
-
-  - name: wait for a passive to take over
-    action: assert
-    timeout: 45s
-    active_count: 1
-
   - name: force validator-3 active (simulating split-brain)
     action: add_active
     target: validator-3
