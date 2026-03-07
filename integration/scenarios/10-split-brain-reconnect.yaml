@@ -2,10 +2,8 @@ name: split-brain-reconnect
 description: >
   The active validator disconnects long enough for a passive to take over.
   Then the original active reconnects with a stale active identity.
-  Both nodes see themselves as active via getIdentity and neither detects
-  the conflict. This is a realistic split-brain scenario and documents
-  the same gap as 07-dual-active-detection.
-  When a guard is implemented, change final assert to active_count: 1.
+  The dual-active guard should detect the conflict and the lower-priority
+  node should step down, resolving the split-brain automatically.
 
 initial_state:
   active_validator: validator-1
@@ -43,11 +41,11 @@ steps:
     action: reconnect
     target: validator-1
 
-  - name: wait for validator-1 to observe the cluster
+  - name: wait for dual-active detection to trigger
     action: wait
     duration: 10s
 
-  - name: split-brain persists — old leader reclaims active (NO guard exists)
+  - name: split-brain resolved — only one active remains
     action: assert
     timeout: 20s
-    active_count: 2
+    active_count: 1

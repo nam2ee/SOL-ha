@@ -1,10 +1,9 @@
 name: dual-active-detection
 description: >
   Two validators are simultaneously set to active identity, simulating a
-  split-brain condition. This scenario documents current behavior: the system
-  does NOT detect or resolve dual-active. Both validators remain active
-  indefinitely. This is a known gap (no dual-active guard exists).
-  When a guard is implemented, update this scenario to assert active_count: 1.
+  split-brain condition. The dual-active guard should detect this within
+  one poll cycle and the lower-priority node (higher IP rank) should
+  automatically step down, leaving exactly one active validator.
 
 initial_state:
   active_validator: validator-1
@@ -26,11 +25,11 @@ steps:
     action: add_active
     target: validator-3
 
-  - name: wait for validator-3 to detect its active identity
+  - name: wait for dual-active detection to trigger
     action: wait
     duration: 10s
 
-  - name: dual-active persists (NO guard exists - documenting current gap)
+  - name: dual-active resolved — only one active remains
     action: assert
     timeout: 20s
-    active_count: 2
+    active_count: 1

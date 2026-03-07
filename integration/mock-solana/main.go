@@ -166,10 +166,18 @@ func (s *MockSolanaServer) handleAction(w http.ResponseWriter, r *http.Request) 
 		log.Printf("[control] set_active: %q", action.Target)
 
 	case "set_passive":
-		// Only clear the active validator if this specific validator is currently active.
+		// Clear this validator from active state (both primary and additional actives).
 		// Idempotent: if it was already passive, this is a no-op.
+		changed := false
 		if s.activeValidator == action.Target {
 			s.activeValidator = ""
+			changed = true
+		}
+		if s.activeValidators[action.Target] {
+			delete(s.activeValidators, action.Target)
+			changed = true
+		}
+		if changed {
 			log.Printf("[control] set_passive: %q (was active, cleared)", action.Target)
 		} else {
 			log.Printf("[control] set_passive: %q (already passive, no-op)", action.Target)

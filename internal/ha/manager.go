@@ -3,8 +3,10 @@ package ha
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -290,6 +292,14 @@ func (m *Manager) ensureHAState() {
 	// refresh metrics
 	m.refreshMetrics()
 
+	// dual-active detection: if we are active and another peer is also active, the lower-ranked
+	// node (higher IP rank number) must step down immediately to resolve split-brain
+	if m.isSelfActive() {
+		if m.checkDualActiveAndStepDown() {
+			return
+		}
+	}
+
 	// do nothing except warn if a config-undeclared active peer is found, this prevents false positive failovers
 	// and prompts users to declare these so that the anti-race condition logic (based on IPs) can continue to work as intended
 	if m.gossipState.HasConfigUndeclaredActivePeer() {
@@ -312,6 +322,14 @@ func (m *Manager) ensureHAState() {
 	if m.isSelfNotInGossip() {
 		// If RPC failed, we likely have network connectivity issues - become passive
 		if m.gossipState.LastRefreshHadRPCError() {
+			// Check if we can reach any peer at all — if completely isolated, step down immediately
+			// rather than waiting for leaderless threshold (prevents extended dual-active window)
+			peerActives := m.checkPeerHeartbeats()
+			if len(peerActives) > 0 {
+				m.logger.Error("RPC is down but peer(s) reachable and active - ensuring we are passive immediately to avoid dual-active")
+				m.ensurePassive()
+				return
+			}
 			m.logger.Error("we do not appear in gossip due to RPC error (possible network connectivity issue) - ensuring we are passive")
 			m.ensurePassive()
 			return
@@ -760,4 +778,119 @@ func (m *Manager) delayTakeoverAsActive() (err error) {
 	time.Sleep(delay)
 	m.logger.Warn("takeover delay complete")
 	return nil
+}
+
+// checkDualActiveAndStepDown checks if there are multiple active peers (split-brain) and steps down
+// if this node has a lower priority (higher IP rank number). Returns true if this node stepped down.
+func (m *Manager) checkDualActiveAndStepDown() bool {
+	// Layer 1: gossip-based detection (requires working RPC)
+	activePeers := m.gossipState.GetActivePeers()
+	if len(activePeers) > 1 {
+		m.logger.Error(fmt.Sprintf("DUAL-ACTIVE DETECTED via gossip: %d active peers found", len(activePeers)))
+		if m.shouldStepDown(activePeers) {
+			m.logger.Error("stepping down to resolve split-brain (lower priority by IP rank)")
+			m.ensurePassive()
+			return true
+		}
+		m.logger.Warn("dual-active detected but we have highest priority - expecting other node(s) to step down")
+		return false
+	}
+
+	// Layer 2: peer heartbeat detection (works even when RPC is down)
+	peerActives := m.checkPeerHeartbeats()
+	if len(peerActives) > 0 && m.isSelfActive() {
+		// We are active AND at least one peer reports itself as active
+		allActives := append(peerActives, gossip.PeerState{
+			Name: m.cfg.Validator.Name,
+			IP:   m.peerSelf.IP,
+		})
+		m.logger.Error(fmt.Sprintf("DUAL-ACTIVE DETECTED via peer heartbeat: found %d other active peer(s)", len(peerActives)))
+		if m.shouldStepDown(allActives) {
+			m.logger.Error("stepping down to resolve split-brain (lower priority by IP rank via heartbeat)")
+			m.ensurePassive()
+			return true
+		}
+		m.logger.Warn("dual-active detected via heartbeat but we have highest priority - expecting other node(s) to step down")
+	}
+
+	return false
+}
+
+// shouldStepDown returns true if this node should yield to a higher-priority active peer.
+// Priority is determined by IP rank: rank 0 (lowest IP) has highest priority.
+func (m *Manager) shouldStepDown(activePeers []gossip.PeerState) bool {
+	rankedPeerIPs := m.gossipState.PeerIPRankMap()
+	selfRank, ok := rankedPeerIPs[m.peerSelf.IP]
+	if !ok {
+		// Can't determine rank — step down to be safe
+		m.logger.Error("unable to determine own IP rank, stepping down as precaution")
+		return true
+	}
+
+	for _, peer := range activePeers {
+		if peer.IP == m.peerSelf.IP {
+			continue
+		}
+		peerRank, ok := rankedPeerIPs[peer.IP]
+		if !ok {
+			continue
+		}
+		if peerRank < selfRank {
+			// A higher-priority peer is also active — we should step down
+			m.logger.Error(fmt.Sprintf("peer %s (rank %d) has higher priority than us (rank %d)", peer.Name, peerRank, selfRank))
+			return true
+		}
+	}
+	return false
+}
+
+// checkPeerHeartbeats directly queries each peer's metrics endpoint to check if they report
+// themselves as active. This works even when Solana RPC is unavailable.
+func (m *Manager) checkPeerHeartbeats() []gossip.PeerState {
+	var activePeers []gossip.PeerState
+
+	for name, peer := range m.cfg.Failover.Peers {
+		if peer.IP == m.peerSelf.IP {
+			continue // skip ourselves
+		}
+
+		role := m.queryPeerRole(name, peer)
+		if role == "active" {
+			activePeers = append(activePeers, gossip.PeerState{
+				Name: name,
+				IP:   peer.IP,
+			})
+		}
+	}
+
+	return activePeers
+}
+
+// queryPeerRole queries a peer's prometheus metrics endpoint to determine its current role.
+// Returns "active", "passive", or "" if unreachable.
+func (m *Manager) queryPeerRole(name string, peer config.Peer) string {
+	// Use the prometheus port from our own config as peers use the same port
+	port := m.cfg.Prometheus.Port
+	url := fmt.Sprintf("http://%s:%d/metrics", peer.IP, port)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		m.logger.Debug("peer heartbeat unreachable", "peer", name, "ip", peer.IP, "error", err)
+		return ""
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ""
+	}
+
+	metrics := string(body)
+	if strings.Contains(metrics, `validator_role="active"`) {
+		return "active"
+	} else if strings.Contains(metrics, `validator_role="passive"`) {
+		return "passive"
+	}
+	return ""
 }

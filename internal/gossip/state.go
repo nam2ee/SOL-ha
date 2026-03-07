@@ -544,6 +544,17 @@ func (p *State) GetActivePeer() (state PeerState, err error) {
 	return PeerState{}, fmt.Errorf("no active peer found")
 }
 
+// GetActivePeers returns all peers currently seen as active
+func (p *State) GetActivePeers() []PeerState {
+	var actives []PeerState
+	for _, state := range p.peerStatesByName {
+		if state.LastSeenActive {
+			actives = append(actives, state)
+		}
+	}
+	return actives
+}
+
 // HasPeers returns true if the IP has any peers in the gossip state
 // that is, any peers in that state that are not the passed IP address
 func (p *State) HasPeers(ip string) bool {
